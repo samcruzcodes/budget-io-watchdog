@@ -1,0 +1,4 @@
+# Normalize line endings in the repo; shell scripts must keep Unix line endings to run on Linux and macOS.
+* text=auto
+mvnw text eol=lf
+*.cmd text eol=crlf

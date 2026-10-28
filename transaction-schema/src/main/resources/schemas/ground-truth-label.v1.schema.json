@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ground-truth label v1",
+  "description": "The simulator's answer key for one transaction, published to the `transaction-labels` Kafka topic, keyed by transactionId. Mirrors io.budget.watchdog.schema.GroundTruthLabel. The record also enforces cross-field rules: an issue or edge case needs a scenarioId, and an edge case has issueType NONE.",
+  "type": "object",
+  "required": ["schemaVersion", "transactionId", "persona", "issueType", "scenarioId", "edgeCase"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "transactionId": { "type": "string", "format": "uuid" },
+    "persona": { "type": "string", "pattern": "\\S" },
+    "issueType": {
+      "enum": ["NONE", "DUPLICATE_CHARGE", "TRIAL_CONVERSION", "PRICE_HIKE", "SPENDING_SPIKE", "CARD_TESTING", "NEW_COUNTRY"]
+    },
+    "scenarioId": { "type": ["string", "null"], "format": "uuid", "description": "Groups the transactions of one injected issue or edge case." },
+    "edgeCase": {
+      "enum": ["DOUBLE_COFFEE", "CANCELLED_TRIAL", "APP_STORE_PURCHASES", "LEGIT_BIG_PURCHASE", "LEGIT_TRAVEL", "TOLL_ROAD_TRIP", "FOREIGN_ONLINE_ORDER", null]
+    }
+  }
+}

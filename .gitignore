@@ -1,0 +1,15 @@
+# Build output
+target/
+
+# IDEs and OS files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Secrets and local overrides (config/*.env presets are committed on purpose)
+.env
+.env.*
+
+# Logs
+*.log

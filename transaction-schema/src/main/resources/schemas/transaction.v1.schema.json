@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Transaction v1",
+  "description": "A card transaction published to the `transactions` Kafka topic, keyed by cardId. Mirrors io.budget.watchdog.schema.Transaction; TransactionContractTest keeps the two in sync. Unknown extra fields are allowed.",
+  "type": "object",
+  "required": [
+    "schemaVersion", "transactionId", "source", "userId", "cardId", "merchant", "category",
+    "amountCents", "currency", "country", "occurredAt", "publishedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "transactionId": { "type": "string", "format": "uuid", "description": "Unique per transaction; the idempotency key." },
+    "source": { "type": "string", "pattern": "\\S", "description": "SIMULATOR today, PLAID later." },
+    "userId": { "type": "string", "pattern": "\\S" },
+    "cardId": { "type": "string", "pattern": "\\S", "description": "Card (or account) the transaction posted to. Also the Kafka key." },
+    "merchant": { "type": "string", "pattern": "\\S" },
+    "category": {
+      "enum": ["INCOME", "RENT", "UTILITIES", "GROCERIES", "DINING", "TRANSPORTATION", "SUBSCRIPTIONS", "SHOPPING", "TRAVEL"]
+    },
+    "amountCents": { "type": "integer", "minimum": 0, "description": "Money out, except for INCOME, which is money in." },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$", "description": "ISO 4217 code. USD only in v1." },
+    "country": { "type": "string", "pattern": "^[A-Z]{2}$", "description": "ISO 3166-1 alpha-2 merchant country." },
+    "occurredAt": { "type": "string", "format": "date-time", "description": "When it happened (event time). Rules use only this time." },
+    "publishedAt": { "type": "string", "format": "date-time", "description": "Real time the source published it. End-to-end latency starts here." }
+  }
+}

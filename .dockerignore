@@ -1,0 +1,7 @@
+# Docker builds use the repo root as their context; keep it small.
+.git
+**/target
+.idea
+.vscode
+.DS_Store
+docs

@@ -1,0 +1,27 @@
+# Defaults for running the service on your machine against `docker compose up` (Kafka on localhost:9094, Postgres on
+# localhost:5432). In Compose, environment variables override them: SPRING_KAFKA_BOOTSTRAP_SERVERS maps onto
+# spring.kafka.bootstrap-servers, SPRING_DATASOURCE_URL onto spring.datasource.url, and so on.
+spring:
+  application:
+    name: watchdog
+  datasource:
+    url: jdbc:postgresql://localhost:5432/watchdog
+    username: watchdog
+    password: watchdog
+  kafka:
+    bootstrap-servers: localhost:9094
+    consumer:
+      # A brand-new consumer group starts from the oldest message instead of only new ones.
+      auto-offset-reset: earliest
+      # Messages are JSON strings; MessageJson turns them into records (see TransactionParser).
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      # Used to publish failed messages to the dead-letter topic.
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+logging:
+  level:
+    org.apache.kafka: warn

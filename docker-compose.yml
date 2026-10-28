@@ -1,0 +1,123 @@
+# Budget.io Watchdog: the whole stack.
+#   docker compose up --build                   Kafka, Postgres, the simulator, and the watchdog
+#   docker compose --profile tools up --build   also Kafka UI at http://localhost:8081
+# Kafka and Postgres keep their data in memory (tmpfs), so every `up` starts a fresh, deterministic run.
+# Credentials are for local development only, and every port is bound to 127.0.0.1 (this machine only).
+
+name: budget-io-watchdog
+
+services:
+  kafka:
+    image: apache/kafka:4.2.2
+    environment:
+      # One node acting as both broker (stores messages) and KRaft controller (manages cluster metadata).
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: hB_O_huMRcG2piITu59VjA
+      # Clients connect once, then use the address the broker "advertises". Containers must be told kafka:9092,
+      # programs on the host (for example the watchdog run from an IDE) must be told localhost:9094.
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # Topics are created explicitly by kafka-init, so a typo can't silently create a one-partition topic.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # A single node can only keep one copy of Kafka's internal topics.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    tmpfs:
+      # Kafka runs as a non-root user, so the in-memory folder must be writable by everyone (like /tmp).
+      - /var/lib/kafka/data:mode=1777
+    ports:
+      - "127.0.0.1:9094:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 10s
+
+  # One-shot job: creates the topics with explicit partition counts, then exits. The apps wait for it.
+  kafka-init:
+    image: apache/kafka:4.2.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        # 3 partitions each. The DLT matches `transactions` because a failed message keeps its partition number.
+        for topic in transactions transaction-labels transactions.DLT; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic "$$topic" --partitions 3 --replication-factor 1
+        done
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --describe
+    restart: "no"
+
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: watchdog
+      POSTGRES_USER: watchdog
+      POSTGRES_PASSWORD: watchdog
+    tmpfs:
+      - /var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      # Checks over TCP: during first-time setup Postgres runs a temporary server that only listens on a local
+      # socket, so a socket check could report "ready" before the real server accepts network connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U watchdog -d watchdog"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  simulator:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    env_file: config/simulator.demo.env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: on-failure
+
+  watchdog:
+    build:
+      context: .
+      dockerfile: watchdog-service/Dockerfile
+    environment:
+      # Spring Boot maps these onto spring.kafka.bootstrap-servers and spring.datasource.* in application.yml.
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/watchdog
+      SPRING_DATASOURCE_USERNAME: watchdog
+      SPRING_DATASOURCE_PASSWORD: watchdog
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  # Optional: browse topics and messages in a web UI.
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    profiles: [tools]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: watchdog
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:8080"
