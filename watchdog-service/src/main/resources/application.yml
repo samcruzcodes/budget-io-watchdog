@@ -22,6 +22,35 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
+# Detection rule thresholds: starting values, explained in docs/DESIGN.md. Each rule's Settings record rejects bad
+# values at startup. Environment variables override them too, e.g. WATCHDOG_RULES_DUPLICATECHARGE_WINDOW=5m.
+watchdog:
+  rules:
+    duplicate-charge:
+      window: 10m
+    trial-conversion:
+      max-trial-cents: 100
+      min-multiple: 5
+      min-delay: 5d
+      max-delay: 45d
+    price-hike:
+      min-gap: 26d
+      max-gap: 35d
+      tolerance-percent: 1
+    spending-spike:
+      categories: [DINING, SHOPPING]
+      min-std-devs: 3
+      min-history-days: 14
+      min-day-total-cents: 5000
+    card-testing:
+      window: 60m
+      max-probe-cents: 200
+      min-probes: 3
+      min-charge-cents: 10000
+    new-country:
+      min-prior-transactions: 20
+      travel-lookback: 30d
+
 logging:
   level:
     org.apache.kafka: warn
