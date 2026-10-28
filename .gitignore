@@ -13,3 +13,6 @@ target/
 
 # Logs
 *.log
+
+# Pinned local tools (kind, kubectl), downloaded per machine
+.tools/
