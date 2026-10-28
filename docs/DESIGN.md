@@ -7,14 +7,14 @@ Watchdog watches card transactions as they happen and flags two kinds of problem
 
 It's the next version of Budget.io, my manual budget planner. This doc covers how Watchdog works, why I built it this way, and where it's going.
 
-**Status:** Phase 1, the transaction pipeline, is built and tested. Everything after that is planned and marked that way below.
+**Status:** Phases 1 and 2 are built and tested: the transaction pipeline, and six detection rules that check every new transaction. For now the rules log each hit with a plain-English explanation; alerts and metrics come in Phase 3. Everything after Phase 2 is planned and marked that way below.
 
 ## Roadmap
 
 | Phase | What | Status |
 |---|---|---|
 | 1 | Transaction pipeline: a simulator, Kafka, and a Spring Boot service that validates transactions and stores them in PostgreSQL | Done |
-| 2 | Six detection rules, with unit tests | Planned |
+| 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
 | 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | Planned |
 | 4 | Dashboard, with a Selenium end-to-end test | Planned |
 | 5 | CI with GitHub Actions, and benchmark results in the README | Planned |
@@ -84,7 +84,7 @@ flowchart LR
     TX --> ING
     ING -- invalid --> DLT
     ING --> PG
-    ING -.-> RULES
+    ING --> RULES
     RULES -.-> PG
     RULES -.-> AL
     LB -.-> EVAL
@@ -95,14 +95,14 @@ flowchart LR
     PG -.-> NB
 
     classDef planned stroke-dasharray: 5 5
-    class PLAID,AL,RULES,EVAL,API,DASH,NB,BIO planned
+    class PLAID,AL,EVAL,API,DASH,NB,BIO planned
 ```
 
 Solid boxes and arrows exist today. Dashed ones are planned.
 
 1. A source publishes each transaction to the `transactions` topic in Kafka, keyed by card. Right now the only source is the simulator, which also publishes a ground-truth label for every transaction to `transaction-labels`.
 2. The watchdog reads `transactions`, validates each message, and stores it once in PostgreSQL. Messages it can't parse go to `transactions.DLT`.
-3. Planned: the rules check each new transaction, and every hit becomes an alert that's saved to Postgres and published to `alerts`.
+3. The detection rules check each new transaction and log every hit with a plain-English explanation. Planned (Phase 3): each hit becomes an alert that's saved to Postgres and published to `alerts`.
 4. Planned: an evaluation step compares the alerts with the labels to measure precision and recall. The rules never see the labels.
 5. Planned: a REST API with live updates feeds the dashboard, and later the Budget.io planner.
 
@@ -239,9 +239,10 @@ The watchdog is a Spring Boot app. For each message on `transactions`:
 1. A `@KafkaListener` receives it. Three consumer threads share the topic's three partitions, so each card's transactions are handled in order by one thread.
 2. It parses the JSON into a `Transaction`. A message that fails goes straight to `transactions.DLT`, with the reason in its headers and a warning in the log, so one bad message can't block a partition.
 3. It stores the transaction with `INSERT ... ON CONFLICT (transaction_id) DO NOTHING`. If the row already exists, Kafka delivered the same message twice and the watchdog skips it. A duplicate message must never look like a duplicate charge.
-4. Kafka's offset, its bookmark for where the watchdog is in the topic, gets committed after processing.
+4. A new transaction (not a skipped one) goes through the detection rules, described under Phase 2.
+5. Kafka's offset, its bookmark for where the watchdog is in the topic, gets committed after processing.
 
-Running the rules and saving alerts come in Phases 2 and 3.
+Saving alerts comes in Phase 3.
 
 **When things go wrong:**
 
@@ -287,9 +288,9 @@ A few details:
 - **A throwaway demo.** Kafka and Postgres keep their data in memory (tmpfs), so every `docker compose up` starts a fresh, repeatable run. Without that, a restarted simulator would replay transactions the watchdog already has, and the demo would go quiet until it caught up. Kafka runs as a non-root user, so its tmpfs needs `mode=1777`. Restarting just the Postgres container wipes its data.
 - **Images.** Each Dockerfile builds in the official `maven:3.9.16-eclipse-temurin-21-noble` image (the same Maven and Java as `./mvnw`) and runs on a smaller `eclipse-temurin:21` Java runtime image as a non-root user. Tests run in CI, not inside image builds.
 
-### Testing so far
+### Testing (Phase 1)
 
-`./mvnw verify` runs 78 unit tests:
+Phase 1 added 78 unit tests:
 
 - **`transaction-schema` (35):** contract tests that give the `Transaction` record and the JSON Schema the same valid and invalid messages and check that they agree, the label rules, and the Budget.io category mapping.
 - **`simulator` (38):** the same seed gives identical data; adding users doesn't change existing ones; every transaction makes a valid message with exactly one label; nothing is injected during the warm-up; scenario counts land within 15% of their configured rates over 300 users and a simulated year; each scenario has the shape the rules will look for; plus the persona assignment and the clock math.
@@ -322,33 +323,53 @@ A few real bugs and surprises came up while building Phase 1. I'm keeping them h
 - **One checksum, two downloads.** The Maven wrapper downloads a `.zip` when `unzip` is installed and a `.tar.gz` when it isn't, and a pinned checksum can only match one of them. That's why the Docker builds use the official Maven image instead of `./mvnw`, which means Maven's version is pinned in two places.
 - **Checking the check.** The first "did every transaction make it to Postgres?" comparison read the topic while the simulator was still writing to it and reported 12 extra rows, which looked like a bug. Pausing the simulator gave a clean comparison, and the counts matched exactly.
 
-## Planned work
+## Phase 2: what's built
 
-### Phase 2: detection rules
-
-Each rule is its own class behind one interface, so adding a rule means adding a class:
+Six detection rules check every new transaction. Each rule is its own class behind one interface, so adding a rule means adding a class, and a `RuleEngine` runs them all:
 
 ```java
 public interface DetectionRule {
-    String id();
-    Optional<RuleHit> evaluate(Transaction tx); // reads and updates this rule's per-card state
+    String id();                                // "duplicate-charge"; Phase 3 stores it as the detector's name
+    IssueType detects();                        // the one issue type this rule is scored against
+    Optional<RuleHit> evaluate(Transaction tx); // checks tx against this rule's per-card history, then updates it
 }
 ```
 
-Each rule will also say which issue type it detects, so Phase 3 can score it against the labels, and an ML model could later be scored the same way. A hit carries a plain-English explanation, like "Netflix charged you $15.49 twice, 40 seconds apart," plus the numbers behind it.
+Each rule says which issue type it detects, so Phase 3 can score it against the labels, and an ML model can later be scored the same way. A hit carries the rule's ID, that issue type, and a plain-English explanation with the numbers behind it. Until Phase 3 adds alerts, the listener logs each hit:
 
-| Rule | Kind | Fires when |
-|---|---|---|
-| `duplicate-charge` | leak | the same merchant and amount on the same card within 10 simulated minutes |
-| `trial-conversion` | leak | a charge of $1 or less, then the same merchant charges at least 5 times that amount 5 to 45 days later |
-| `price-hike` | leak | a merchant has charged about monthly (26 to 35 days apart) at a stable price (the last two charges within 1%), and the new charge is higher |
-| `spending-spike` | leak | today's spending in a category is at least 3 standard deviations above this card's usual day; needs 14+ days of history and a minimum dollar amount; at most once per category per day |
-| `card-testing` | suspicious | 3+ charges of $2 or less within 60 minutes, then a charge of $100 or more |
-| `new-country` | suspicious | the first charge from a country this card hasn't used, unless there was a travel charge in the last 30 days; needs 20+ prior transactions; flagged countries don't count as known, so fraud can't teach the rule it's normal |
+```
+Rule hit duplicate-charge on card-0002 at 2026-03-08T18:57:45Z (transaction c1ff7a9f-99d1-34a8-a5a0-2b0719ce3f42): Whole Foods Market charged $140.84 twice, 24 seconds apart.
+```
 
-"Suspicious charge" is split into two rules so each class does one thing and gets its own precision and recall. Rules ignore income, and they only use event time. The thresholds are starting points I'll tune against the simulator.
+### The rules
 
-**Where each card's history lives.** The rules need history: recent charges, running averages, countries seen. The options I looked at:
+| Rule | Kind | Fires when | Example explanation |
+|---|---|---|---|
+| `duplicate-charge` | leak | the same merchant and amount on the same card within 10 minutes | "Whole Foods Market charged $87.42 twice, 40 seconds apart." |
+| `trial-conversion` | leak | a charge of $1 or less, then the same merchant charges more than $1 and at least 5 times as much, 5 to 45 days later; once per trial | "Peacock charged $10.99, 12 days after a $0.00 charge. A free trial may have turned into a paid plan." |
+| `price-hike` | leak | a merchant's last two charges were 26 to 35 days apart and within 1% of each other, and the next one, 26 to 35 days later, is more than 1% higher | "Netflix charged $17.99, up from $15.49 last month." |
+| `spending-spike` | leak | today's dining or shopping total reaches 3 standard deviations above this card's usual day in that category; needs 14 days with spending and at least $50 today; once per category per day | "You've spent $182.40 on dining today. On a usual dining day this card spends about $30.00." |
+| `card-testing` | suspicious | 3 or more charges of $2 or less in the 60 minutes before a charge of $100 or more; once per burst | "3 charges of $2.00 or less in the 25 minutes before a $412.50 charge at ElectroMart Online. Someone may be testing your card number." |
+| `new-country` | suspicious | a charge from a country the card isn't normally used in, unless there was a travel purchase in the last 30 days; needs 20 earlier transactions; flagged countries aren't learned, so fraud can't teach the rule it's normal | "$812.40 at Luxury Goods Outlet (France), a country this card isn't normally used in, with no travel purchases in the last 30 days." |
+
+"Suspicious charge" is split into two rules so each class does one thing and gets its own precision and recall. Two refinements came from reviewing the rules:
+
+- **Trial conversions and holds.** While reviewing the rule, I realized a gas-pump hold could still trigger a false alert a week later: a $1 hold, the real fill-up minutes later, then next week's fill-up at the same station. Now a charge over $1 from the same merchant within the first 5 days makes the rule forget the small charge, since that was a hold or a purchase, not a trial. On the prototype data (below) it removed 88 false positives without missing any real conversions.
+- **Explanations that stay true.** A third identical charge says "charged $5.45 again, 60 seconds after an identical charge", because "twice" would be wrong. New-country doesn't say "first charge from France", because a flagged country isn't learned and fires again on its next charge.
+
+### How every rule works
+
+- **Event time only.** Rules compare `occurredAt` values and never read the clock, so they give the same answer at any simulator speed.
+- **Check, then learn.** A rule checks a transaction against what it knew before, then adds it. Learning first would make every charge a duplicate of itself, and a hotel abroad could count as the travel purchase that excuses itself.
+- **Only general signals.** Amounts, timing, categories, and the card's own history. No merchant names or country lists, so the rules can't learn the simulator's giveaways (fictional fraud merchants, the fixed list of probe merchants), and they'd work the same on Plaid data.
+- **Each new transaction once.** The listener only runs the rules when the insert was new, so a message Kafka delivers twice never reaches them.
+- **Income is skipped** by the engine.
+- **One broken rule can't hide the others.** The engine catches an exception from a rule, logs it at ERROR, and runs the rest. Rethrowing wouldn't help: Kafka's retry would find the transaction already stored and silently skip every rule.
+- **Time order and days.** Each card's transactions are assumed to arrive in time order, which the simulator and the per-card keying guarantee. Days are UTC days, like the simulator's people.
+
+### Where each card's history lives
+
+The rules need history: recent charges, running averages, countries seen. The options I looked at:
 
 | Option | Pros | Cons |
 |---|---|---|
@@ -357,13 +378,114 @@ Each rule will also say which issue type it detects, so Phase 3 can score it aga
 | Kafka Streams state stores | the standard streaming answer; durable, and handles partitions moving | a lot of new concepts for this project |
 | Redis | shared and fast | another service to run and explain |
 
-In-memory state works here because each card belongs to one thread at a time, so there's no per-card locking. It also stays small: time windows get pruned, the spending-spike rule keeps a running count, mean, and variance per category (Welford's algorithm), and price history keeps only the last three charges per merchant. At startup, the watchdog would replay about 90 simulated days from Postgres through the rules, with alerts switched off. Scaling out to several watchdogs would mean moving to Kafka Streams.
+Each rule keeps its history in memory, in a map keyed by card. It stays small: time windows are pruned on every transaction, merchants and small charges that can't matter anymore are dropped, and the spending-spike rule keeps three running numbers per category (Welford's algorithm, below). Unit tests feed one card a simulated year of transactions and check that each windowed rule's memory stays bounded.
 
-The subscriptions list for the dashboard will be computed on request from the `transactions` table, using the same recurring-charge check as the price-hike rule, so there's no second copy of subscription data to keep in sync.
+Each card normally arrives on one consumer thread, but the engine still takes a per-card lock around that card's rules. The lock is almost never contended, because only one thread usually asks for a given card. It's there because Kafka can move a partition to another thread: during testing, two partitions moved at startup, about 3 seconds in. Java only guarantees that the new thread sees the old thread's changes to a card's history if they hand over through a lock. The same lock will cover the Phase 3 warm-up, which replays history on a different thread.
+
+The history isn't rebuilt at startup yet. That warm-up, replaying about 90 simulated days from Postgres through the rules with alerts switched off, is planned for Phase 3, so for now a restarted watchdog starts with empty memory (see Known limitations). Scaling out to several watchdogs would mean moving to Kafka Streams.
+
+### Thresholds
+
+Every threshold lives in `application.yml` under `watchdog.rules.*`, can be overridden with an environment variable (for example `WATCHDOG_RULES_DUPLICATECHARGE_WINDOW=5m`), and is checked at startup: a bad or missing value stops the app with a message that names the setting. They're starting values I'll tune against real metrics in Phase 3. Several came straight from how I built the simulator, so the last column says where each one came from.
+
+| Setting | Value | Why this value | Came from |
+|---|---|---|---|
+| `duplicate-charge.window` | 10 min | A glitch reposts a charge within seconds to minutes. The simulator's copies land 5 to 90 seconds later, and its double coffees 1 to 5 minutes later, so this window catches both. | both |
+| `trial-conversion.max-trial-cents` | $1.00 | Trials sign up for $0 or with a $1 card check. | both |
+| `trial-conversion.min-multiple` | 5× | A paid plan costs many times a $1 check. The simulator's plans cost $10.99 to $69.99. | simulator |
+| `trial-conversion.min-delay` | 5 days | Sooner than that is a hold followed by the real charge, like at a gas pump, not a trial. | real world |
+| `trial-conversion.max-delay` | 45 days | Real trials usually last 7, 14, or 30 days, so the first full charge lands in this range with some margin. The simulator converts at 7 to 30 days. | both |
+| `price-hike.min-gap`, `max-gap` | 26 to 35 days | Monthly billing lands 28 to 31 days apart, plus time of day and short months. | real world |
+| `price-hike.tolerance-percent` | 1% | Subscriptions repeat the exact price; 1% leaves room for small rounding or tax changes. The simulator's hikes are 10 to 25%. | both |
+| `spending-spike.categories` | dining, shopping | The impulse categories; fixed bills can't spike and broke the math (below). Also where the simulator plants binges. | both, disclosed |
+| `spending-spike.min-std-devs` | 3 | The usual line for "far from normal". Real spending is skewed, so it fires more often than the normal math predicts. | real world |
+| `spending-spike.min-history-days` | 14 | Fewer days with spending give a noisy baseline. | real world |
+| `spending-spike.min-day-total-cents` | $50 | A spike under $50 isn't worth an alert, even when it's unusual. | real world |
+| `card-testing.max-probe-cents` | $2.00 | Card testers use tiny amounts to avoid notice. The simulator's probes are $0.50 to $2.00. | both |
+| `card-testing.min-probes` | 3 | One small charge is normal, like an app or a toll; several in an hour is the pattern. The simulator's attacks use 3 to 5. | both |
+| `card-testing.window` | 60 min | Attacks are quick, and the simulator's always fit within an hour. | simulator |
+| `card-testing.min-charge-cents` | $100 | The cash-out is a real purchase. The simulator's are $150 to $900. | simulator |
+| `new-country.min-prior-transactions` | 20 | A brand-new card needs a little history before "new country" means anything. | real world |
+| `new-country.travel-lookback` | 30 days | People book flights before the trip. The simulator books 5 to 25 days ahead, and a 14-day window did worse on the demo data. Real people often book further out (see Known limitations). | both |
+
+### Spending spike: categories and baseline
+
+Two decisions here came from checking the rule against the simulator's labels before writing any Java. Throwaway Python prototypes of all six rules ran over a snapshot of the demo stack: 203,086 transactions, 3 users, about 60 simulated years. **These are demo-rate prototype numbers.** The demo plants problems far more often than real life, so they show how the variants compare, not real-world performance.
+
+- **Categories.** Watching every category broke the rule: rent fired on 978 of 1,020 rent days, because its standard deviation is 0, and subscriptions fired 1,060 times. Groceries and transportation only fired on ordinary days, like two grocery runs in one day. I watch dining and shopping: they're the impulse categories, and fixed bills like rent and subscriptions aren't spikes. These are also the two categories where my simulator plants binges, which makes the rule look better on this data than it may on real data.
+- **Days with no spending aren't in the baseline.** Otherwise a once-a-week shopper's usual shopping day would be about $5, and every normal trip would look like a spike.
+- **Baseline.** Every finished day joins the baseline, spikes included. I'd rather have fewer false alarms and a baseline that adapts than catch every spike, because people stop trusting alerts that fire too often. The variants I compared:
+
+| Variant | Alerts | Precision | Recall |
+|---|---|---|---|
+| **Dining and shopping, learn every day (chosen)** | 1,343 | 43% | 50% |
+| Dining and shopping, skip flagged days | 4,997 | 22% | 96% |
+| Dining and shopping, clip flagged days | 2,102 | 30% | 55% |
+| Dining and shopping, learn every day, log amounts | 21 | 90% | 2% |
+| Four everyday categories, learn every day | 1,837 | 32% | 50% |
+| Four everyday categories, skip flagged days | 5,930 | 19% | 96% |
+| Four everyday categories, clip flagged days | 2,702 | 24% | 55% |
+| Four everyday categories, learn every day, log amounts | 70 | 27% | 2% |
+
+"Four everyday categories" adds groceries and transportation. "Clip" learns the threshold a flagged day crossed instead of the day's real total. "Log amounts" runs the statistics on the log of each day's total, which suits skewed data, but at the same 3-standard-deviation line it almost never fires. Recall is low for the chosen variant because the demo plants a $749 to $1,299 purchase about every 50 days per person, and one outlier widens the baseline for a while. The simulator's default rates are 10 times rarer, so recall should be better at benchmark rates; Phase 5 will measure it.
+
+**Welford's algorithm** keeps three numbers per card and category: the count, the mean, and the sum of squared distances from the mean, updated as each day finishes. The textbook shortcut, a sum and a sum of squares, subtracts two huge, nearly equal numbers: on four values near a billion cents it returns a variance of 0 instead of 30, which a unit test shows.
+
+### Testing (Phase 2)
+
+`./mvnw verify` now runs 183 unit tests, none needing Docker: 35 schema, 38 simulator, and 110 in `watchdog-service` (5 parsing, 105 rules):
+
+- **Each rule:** fires, doesn't fire, exact window and threshold boundaries, its look-alikes from the simulator, and isolation between cards. The rules with windows also get a year of transactions on one card, to check their memory stays bounded.
+- **Welford:** matches a two-pass calculation, and stays accurate near a billion.
+- **The engine:** rules run in ID order, income is skipped, a rule that throws doesn't stop the others, and two threads sending one card's transactions at the same time don't lose updates. With the lock removed, that test lost 112 of 100,000.
+- **Determinism:** the same transactions give the same hits, however the cards are interleaved.
+- **Wiring:** Spring loads six rules from the real `application.yml`, each issue type has exactly one rule, and bad settings stop startup.
+- **A guard test** fails if any rule's source mentions the labels, their topic or table, or the evaluation package.
+
+Checks on the running stack:
+
+| Check | Result |
+|---|---|
+| The watchdog starts with all six rules | the startup log lists them, on every start |
+| All six rules fire on a fresh run | within 4 minutes 40 seconds of `docker compose up`, about 140 simulated days |
+| Java rules vs. the Python prototypes on the same transactions | identical hits on both runs: 448 on the first (8,819 transactions), 339 on the second (6,542) |
+| A stored message sent again | logged as "already stored", and no new hit |
+| Same seed, two fresh runs | identical hits up to the same simulated day: 339 hits before December 26, 2027, even though the first run went through a laptop sleep and a rebalance and the second had the per-card lock |
+| Latency with the rules running | p50 10.4 ms, p95 16.6 ms, against 9.0 ms and 11.4 ms for Phase 1 measured the same way the same day. The new JVM was 9 minutes old and its median was still falling, so part of the difference is warm-up. |
+| Watchdog restarted mid-run | back in 2 seconds with six rules and no errors; card-testing and duplicate-charge fired again within 2 simulated days, spending-spike after 19, price-hike after 72, as expected with empty memory |
+
+What the rules flagged on run 1 (8,819 transactions, 970 simulated days, demo rates), scored against the labels:
+
+| Rule | Alerts | Precision | Recall | Most false positives were |
+|---|---|---|---|---|
+| `duplicate-charge` | 133 | 49% | 100% of 65 | double coffees (66) |
+| `trial-conversion` | 52 | 25% | 100% of 13 | App Store pairs (39) |
+| `price-hike` | 87 | 95% | 86% of 96 | ordinary charges (4) |
+| `spending-spike` | 60 | 30% | 42% of 43 | big purchases (16), ordinary days (12), fraud abroad (8) |
+| `card-testing` | 104 | 52% | 100% of 54 | toll road trips (50) |
+| `new-country` | 12 | 92% | 61% of 18 | one foreign online order |
+
+Each rule's false positives are mostly the look-alike the simulator plants for it, which is what the design expects. Real precision and recall, computed by the service itself, come in Phase 3.
+
+### What Phase 2 taught me
+
+- **Check a rule against the data before writing it.** Prototyping the spending-spike rule in Python showed that watching every category fails: rent has a standard deviation of 0, so every rent day looked like a spike. That decided the categories before any Java existed.
+- **A retry can hide a bug.** If a rule throws, Spring retries the message, but the transaction is already stored, so the retry logs "already stored" and skips every rule. A bug would have looked like a duplicate message. That's why the engine catches rule failures itself.
+- **A gas-pump hold.** Reviewing trial-conversion, I found that a $1 hold followed by the real fill-up would make next week's fill-up look like a converted trial. The fix removed 88 false positives on the prototype data.
+- **One outlier widens the baseline.** Learning every day, including spikes, means a single huge day makes the next spike harder to catch for a while. I chose that knowingly (above).
+- **Kafka moves partitions, even inside one process.** The plan said each card stays on one thread, so no locking was needed. On the first test run, two partitions moved between threads at startup, so the engine now takes a per-card lock.
+- **A laptop's sleep broke a measurement.** The first run's latency came out at 713 ms. The Mac had gone to sleep on battery, Docker paused with it, and on each wake the simulator published the missed simulated days in a burst. The rules weren't the cause; the run was measured again with the Mac awake.
+- **The cross-check found a bug in the checker.** The first Java-versus-Python comparison said every line differed. Python's CSV writer ends lines with `\r\n`; once fixed, the hits matched exactly.
+- **Long runs use up the simulator's scenarios.** Each user can try each of the 7 trial offers once and visit each of 10 countries, so a 60-year run had only 13 trial conversions and 18 new-country frauds, against hundreds of App Store pairs. Fine for the demo and a one-year benchmark, but worth knowing before reading long-run numbers.
+
+## Planned work
 
 ### Phase 3: alerts, API, and metrics
 
 - **Alerts** get saved to an `alerts` table (unique on transaction and rule, so a redelivered message can't create a second alert) and published to the `alerts` topic. Each alert records which detector raised it as plain text, so a future ML detector could add alerts without a schema change. Saving to Postgres and publishing to Kafka aren't atomic: a crash in between would leave an alert that was saved but never published. The usual fix is the transactional outbox pattern; for now I'll document the gap instead of building it.
+- **Warm-up:** at startup, replay about 90 simulated days from Postgres through the rules with alerts switched off, before the listener starts. The 90 days count back from the newest stored `occurred_at`, never from the clock (the demo's simulated time runs decades ahead), and cover the longest look-back: price-hike needs two earlier monthly charges.
+- **A gap to close:** if saving alerts fails after the transaction was stored, Kafka's retry finds the transaction already stored and skips the rules. Running the rules twice isn't safe either, because duplicate-charge would match the transaction against itself. This needs designing with the alerts table.
+- **The subscriptions list** for the dashboard is computed on request from the `transactions` table, reusing price-hike's "monthly at a steady price" check, so there's no second copy of subscription data to keep in sync.
 - **Labels** get consumed into a `ground_truth_labels` table. There's no foreign key to `transactions`, because the two topics aren't ordered relative to each other.
 - **The API:**
 
@@ -434,7 +556,7 @@ Some of these cover parts that aren't built yet.
 | Message format | JSON with a `schemaVersion`, plus a JSON Schema | Avro or Protobuf with a Schema Registry | readable, with no extra service to run |
 | Message key | `cardId` | `userId`; no key | keeps each card's transactions in order for the rules |
 | Delivery | at-least-once with idempotent writes | exactly-once with Kafka transactions | the same visible result with less machinery |
-| Rule state | in memory, keyed by card, rebuilt from Postgres | Postgres per transaction; Kafka Streams; Redis | fast and easy to unit test; Kafka Streams is the path if it needs to scale |
+| Rule state | in memory, keyed by card, rebuilt from Postgres at startup (Phase 3) | Postgres per transaction; Kafka Streams; Redis | fast and easy to unit test; Kafka Streams is the path if it needs to scale |
 | Data access | `JdbcClient` with plain SQL, plus Flyway | JPA/Hibernate; Spring Data JDBC | every query is visible, the stats need SQL features, and there's no object graph |
 | Money | `long` cents | `BigDecimal`; `double` | exact and simple with one currency |
 | Time | event time for rules, the real clock for latency | the real clock everywhere | rules give the same answer at any simulator speed |
@@ -446,13 +568,28 @@ Some of these cover parts that aren't built yet.
 | Demo state | in memory, fresh on every `up` | named volumes | a repeatable demo with no stale data |
 | End-to-end test | Selenium with headless Chrome | Playwright; Cypress | it's the browser-testing tool I picked for this project's stack |
 | ML comparison | gradient boosting and Isolation Forest vs. the rules, with a time-based split | a random split; judging by accuracy | a random split leaks the future, and accuracy is meaningless when problems are rare |
+| Rule hits before alerts exist | the engine returns them and the listener logs them | keeping them in memory; a temporary table | tests read the returned list, and Phase 3 swaps the log line for saving and publishing |
+| Rebuilding rule state at startup | Phase 3 | Phase 2 | it needs the listener to wait for the replay and a real Postgres to test; until alerts exist, a restart only means a quiet period |
+| Keeping rules away from the labels | a plain JUnit test that scans the rules' source | ArchUnit | no new dependency for one check |
+| Rule thresholds | one validated `Settings` record per rule, bound from `application.yml` | constants in code; `@Value` fields | tests state their own numbers, bad config stops startup, and environment variables can override |
+| Rule output | yes or no, with an explanation | scores | nothing in Phases 3 to 5 needs scores, and Phase 6 can replay the rules at other thresholds |
+| A rule that throws | the engine logs it at ERROR and runs the other rules | letting Kafka retry | the retry would find the transaction already stored and silently skip every rule |
+| Thread safety of rule state | a per-card lock in the engine | no locking, one thread per card | Kafka can move partitions between threads (two moved at startup in testing), and Java only guarantees the new thread sees the old one's changes through a lock; it also covers the Phase 3 warm-up |
+| Spending-spike categories | dining and shopping | every category; four everyday ones | fixed bills like rent can't spike and broke the rule; disclosed that these are also where the simulator plants binges |
+| Spending-spike baseline | every finished day, spikes included | leaving flagged days out; clipping them; log amounts | fewer false alarms and a baseline that adapts, because people stop trusting alerts that fire too often |
+| Trial charges and holds | a real charge in the first 5 days forgets the small one | only a hit clears it | a hold followed by the real charge isn't a trial; it removed 88 false positives on the prototype data |
 
 ## Known limitations
 
-- There's one watchdog instance. Once the rules exist, their state lives in its memory.
+- There's one watchdog instance, and the rules' history lives in its memory.
+- Until the Phase 3 warm-up, a restarted watchdog starts with empty rule history. Duplicate-charge and card-testing work again within minutes, but new-country waits for 20 transactions, trial-conversion misses signups from before the restart, spending-spike waits for 14 days with spending, and price-hike waits about two months. A trip booked before the restart can cause one false new-country hit. A fresh `docker compose up` isn't affected.
 - The demo's Kafka is a single node that keeps data in memory. If Kafka itself goes down, the demo loses whatever it was holding. Real setups write to disk and keep copies on several servers.
-- Retrying forever protects valid transactions during an outage, but a bug that throws on a valid message would stall its partition until someone fixes it.
+- Retrying forever protects valid transactions during an outage, but a bug that throws while storing a valid message would stall its partition until someone fixes it. A bug in a rule can't: the engine catches it.
 - There's no outbox yet, so in Phase 3 an alert could be saved but never published if the process crashes between the two steps.
-- The spending-spike z-score assumes daily totals are roughly normal. Real spending is skewed, which will cause extra false positives. Phase 6 should measure how many.
+- The spending-spike z-score assumes daily totals are roughly normal. Real spending is skewed, which causes extra false positives: on the first Phase 2 test run it flagged 12 ordinary days, out of 60 hits. Phase 6 should measure this properly.
+- Trial-conversion on storefront merchants: a merchant that sells many things under one name, like an app store, can hide a real conversion. An unrelated purchase from it in the first 5 days after a trial signup makes the rule forget the signup. Accepted, because the hold fix it comes from is worth more.
+- New-country fires on a real trip if the first charge in the new country comes more than 30 days after the last travel purchase: booking a flight further ahead, or moving on to a second country late in a long trip without buying anything new in the travel category. The simulator books at most 25 days ahead and each trip is one country, so the demo data doesn't show it, but real people often book further out.
+- The rules assume each card's transactions arrive in time order, and they use UTC days. Real bank data arrives late and out of order, and days depend on the cardholder's time zone.
 - New cards have no history. The simulator waits 30 simulated days before injecting anything, but a real system would need a fallback, like population-wide baselines.
 - Thresholds and simulator rates are starting values.
+- Latency only means something when the machine stays awake. When the Mac sleeps, Docker pauses with it, and on waking the simulator publishes the missed simulated days in a burst. That happened on the first Phase 2 test run (p50 713 ms), so that measurement was thrown out and repeated with the Mac awake.
