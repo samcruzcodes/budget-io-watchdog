@@ -28,6 +28,7 @@ The design, the tradeoffs behind each choice, every rule's thresholds and where 
 | 1 | Transaction pipeline: simulator, Kafka, validation, and storage | Done |
 | 2 | Six detection rules: duplicate charges, free trial conversions, price hikes, spending spikes, card testing, new-country charges. They log what they flag. | Done |
 | 3 | Alerts (saved and published), detection metrics (precision and recall), and a REST API | Planned |
+| 3.5 | Run the stack on a local Kubernetes cluster (kind) | Planned |
 | 4 | Dashboard | Planned |
 | 5 | CI and benchmark results | Planned |
 | 6 | Compare the rules with an ML model trained on the simulator's labeled data | Planned |
