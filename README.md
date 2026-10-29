@@ -2,7 +2,7 @@
 
 Watchdog watches card transactions as they happen and flags money leaks (duplicate charges, free trials that turned into paid plans, subscription price hikes, spending spikes) and suspicious charges (card testing, charges from a country the card has never been used in). It's the next version of Budget.io, a manual budget planner I built earlier.
 
-**Status:** Phases 1 and 2 are done, and Phase 3 is in progress. A simulator generates realistic card transactions and publishes them to Kafka, and a Spring Boot service validates them, stores them in PostgreSQL, and runs six detection rules on every new one. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to Kafka. Detection metrics, the REST API, the dashboard, and the ML comparison are planned. See the [roadmap](#roadmap).
+**Status:** Phases 1 and 2 are done, and Phase 3 is in progress. A simulator generates realistic card transactions and publishes them to Kafka, and a Spring Boot service validates them, stores them in PostgreSQL, and runs six detection rules on every new one. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to Kafka, and the service measures its own precision and recall against the simulator's answer key. The rest of the REST API, the dashboard, and the ML comparison are planned. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -19,7 +19,7 @@ Watchdog watches card transactions as they happen and flags money leaks (duplica
 - **Simulator** (plain Java): plays a small group of people with different spending habits, like a student, a family, and a frequent traveler, on a clock that runs a simulated month per real minute. It plants realistic problems, plus legitimate purchases that only look like problems, and publishes the truth about every transaction to a separate answer-key topic so detection can be graded later.
 - **Kafka:** holds every transaction, in order per card, until the watchdog reads it. If the watchdog goes down, nothing is lost; it picks up where it left off.
 - **Watchdog** (Spring Boot): checks that each message is valid, stores it exactly once even if Kafka delivers it twice, and sends anything it can't parse to a dead-letter topic. Then it runs six detection rules on each new transaction (duplicate charges, free trials that turned into paid plans, price hikes, spending spikes, card testing, and charges from a new country) and turns anything they flag into an alert, with an explanation like "Whole Foods Market charged $140.84 twice, 24 seconds apart." Alerts are saved to Postgres and published to an `alerts` topic. After a restart it replays recent history from Postgres, so the rules remember each card before it reads anything new.
-- **PostgreSQL:** the stored transactions and alerts.
+- **PostgreSQL:** the stored transactions and alerts, plus the answer key, which only the scoring code reads.
 
 The design, the tradeoffs behind each choice, every rule's thresholds and where they came from, and what I learned building each phase are in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -29,7 +29,7 @@ The design, the tradeoffs behind each choice, every rule's thresholds and where 
 |---|---|---|
 | 1 | Transaction pipeline: simulator, Kafka, validation, and storage | Done |
 | 2 | Six detection rules: duplicate charges, free trial conversions, price hikes, spending spikes, card testing, new-country charges. They log what they flag. | Done |
-| 3 | Alerts (saved and published), detection metrics (precision and recall), and a REST API | In progress: alerts are done |
+| 3 | Alerts (saved and published), detection metrics (precision and recall), and a REST API | In progress: alerts and detection metrics are done |
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | Planned |
 | 4 | Dashboard | Planned |
 | 5 | CI and benchmark results | Planned |
@@ -52,6 +52,7 @@ docker compose down                         # stop everything
 - In Kafka UI, Topics → `transactions` → Messages shows the live feed, `alerts` shows what the rules flagged, and `transactions.DLT` holds anything the watchdog rejected.
 - To watch the rules: `docker compose logs -f watchdog | grep "Rule hit"`. Hits start once the simulator's 30-day warm-up ends, about a minute in.
 - Health checks: `curl localhost:8082/actuator/health` (also `/actuator/health/liveness` and `/actuator/health/readiness`).
+- How well the rules are doing: `curl localhost:8082/api/stats` gives each rule's precision and recall against the simulator's answer key, plus throughput and latency. The demo plants problems far more often than real life, so these aren't real-world numbers; the ones worth quoting will come from the Phase 5 benchmark.
 - To look at what's stored:
 
   ```

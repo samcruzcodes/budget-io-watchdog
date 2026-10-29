@@ -7,7 +7,7 @@ Watchdog watches card transactions as they happen and flags two kinds of problem
 
 It's the next version of Budget.io, my manual budget planner. This doc covers how Watchdog works, why I built it this way, and where it's going.
 
-**Status:** Phases 1 and 2 are built and tested: the transaction pipeline, and six detection rules that check every new transaction. Phase 3 is in progress. Its first part is built: every hit becomes an alert that's saved and published, a restarted watchdog rebuilds its rule memory before it reads Kafka, and there are health checks and integration tests. Detection metrics and the REST API are still planned. Everything not built yet is marked that way below.
+**Status:** Phases 1 and 2 are built and tested: the transaction pipeline, and six detection rules that check every new transaction. Phase 3 is in progress. Its first two parts are built: every hit becomes an alert that's saved and published, a restarted watchdog rebuilds its rule memory before it reads Kafka, there are health checks and integration tests, and the service measures its own precision and recall against the simulator's labels (`GET /api/stats`). The rest of the REST API and the live stream are still planned. Everything not built yet is marked that way below.
 
 ## Roadmap
 
@@ -15,7 +15,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 |---|---|---|
 | 1 | Transaction pipeline: a simulator, Kafka, and a Spring Boot service that validates transactions and stores them in PostgreSQL | Done |
 | 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
-| 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | In progress: alerts, the warm-up, and health checks are built |
+| 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | In progress: alerts, the warm-up, health checks, and detection metrics are built |
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | Planned |
 | 4 | Dashboard, with a Selenium end-to-end test | Planned |
 | 5 | CI with GitHub Actions, and benchmark results in the README | Planned |
@@ -88,15 +88,15 @@ flowchart LR
     ING --> RULES
     RULES --> PG
     RULES --> AL
-    LB -.-> EVAL
-    EVAL -.-> PG
+    LB --> EVAL
+    EVAL --> PG
     PG -.-> API
     API -.-> DASH
     API -.-> BIO
     PG -.-> NB
 
     classDef planned stroke-dasharray: 5 5
-    class PLAID,EVAL,API,DASH,NB,BIO planned
+    class PLAID,API,DASH,NB,BIO planned
 ```
 
 Solid boxes and arrows exist today. Dashed ones are planned.
@@ -104,8 +104,8 @@ Solid boxes and arrows exist today. Dashed ones are planned.
 1. A source publishes each transaction to the `transactions` topic in Kafka, keyed by card. Right now the only source is the simulator, which also publishes a ground-truth label for every transaction to `transaction-labels`.
 2. The watchdog reads `transactions`, validates each message, and stores it once in PostgreSQL. Messages it can't parse go to `transactions.DLT`.
 3. The detection rules check each new transaction. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to `alerts`.
-4. Planned: an evaluation step compares the alerts with the labels to measure precision and recall. The rules never see the labels.
-5. Planned: a REST API with live updates feeds the dashboard, and later the Budget.io planner.
+4. An evaluation step stores the labels and compares them with the alerts to measure precision and recall (`GET /api/stats`). The rules never see the labels.
+5. Planned: the rest of the REST API, with live updates, feeds the dashboard, and later the Budget.io planner.
 
 **Why Kafka sits in the middle.** The simulator never talks to the watchdog or the database directly. Kafka holds every message until the watchdog reads it, so the watchdog can go down, come back, and pick up where it left off. Stopping the watchdog for 20 seconds while the simulator kept running shows this: 130 transactions piled up in Kafka, and within seconds of the restart they were all stored, none lost. It also means other programs can read the same stream later without the simulator knowing about them. The tradeoff is that Kafka is one more system to run and understand.
 
@@ -252,12 +252,13 @@ The watchdog is a Spring Boot app. For each message on `transactions`:
 
 ### Storage
 
-PostgreSQL 18, with two tables so far:
+PostgreSQL 18, with three tables so far:
 
 | Table | Columns |
 |---|---|
 | `transactions` | every message field plus `processed_at` (when the watchdog stored it). Primary key `transaction_id`; indexes on `(card_id, occurred_at)` and `processed_at`. |
 | `alerts` (Phase 3) | every alert message field plus `published_at` (when Kafka confirmed it; empty until then). Primary key `alert_id`, unique on `(transaction_id, detector)`, foreign key to `transactions`; indexes on `occurred_at` and `(user_id, occurred_at)`. |
+| `ground_truth_labels` (Phase 3) | every label field plus `received_at`. Primary key `transaction_id`, no foreign key (a label can arrive before its transaction); index on `(issue_type, scenario_id)`. Only the evaluation code reads it. |
 
 Flyway applies numbered SQL migrations at startup. A committed migration never changes; schema changes go in a new file. I went with Spring's `JdbcClient` and plain SQL instead of JPA: every query is visible, the planned stats need SQL features like `percentile_cont`, and there's no object graph for an ORM to help with.
 
@@ -279,6 +280,7 @@ Flyway applies numbered SQL migrations at startup. A committed migration never c
 | `transactions` | 3 | `cardId` |
 | `transaction-labels` | 3 | `transactionId` |
 | `transactions.DLT` | 3 | the original key. It needs at least as many partitions as `transactions`, because a failed message keeps its partition number. |
+| `transaction-labels.DLT` (Phase 3) | 3 | the original key; labels the watchdog can't parse |
 | `alerts` | 3 | `cardId` |
 
 A few details:
@@ -296,7 +298,7 @@ Phase 1 added 78 unit tests:
 
 - **`transaction-schema` (35):** contract tests that give the `Transaction` record and the JSON Schema the same valid and invalid messages and check that they agree, the label rules, and the Budget.io category mapping.
 - **`simulator` (38):** the same seed gives identical data; adding users doesn't change existing ones; every transaction makes a valid message with exactly one label; nothing is injected during the warm-up; scenario counts land within 15% of their configured rates over 300 users and a simulated year; each scenario has the shape the rules will look for; plus the persona assignment and the clock math.
-- **`watchdog-service` (5):** parsing, including that bad input becomes an `InvalidTransactionException`.
+- **`watchdog-service` (5):** parsing, including that bad input becomes an `InvalidTransactionException` (renamed `InvalidMessageException` in Phase 3, when labels started using it too).
 
 Manual checks on the running stack:
 
@@ -456,7 +458,7 @@ Checks on the running stack:
 | Latency with the rules running | p50 10.4 ms, p95 16.6 ms, against 9.0 ms and 11.4 ms for Phase 1 measured the same way the same day. The new JVM was 9 minutes old and its median was still falling, so part of the difference is warm-up. |
 | Watchdog restarted mid-run | back in 2 seconds with six rules and no errors; card-testing and duplicate-charge fired again within 2 simulated days, spending-spike after 19, price-hike after 72, as expected with empty memory |
 
-What the rules flagged on run 1 (8,819 transactions, 970 simulated days, demo rates), scored against the labels:
+What the rules flagged on run 1 (8,819 transactions, 970 simulated days), scored against the labels. **These are demo-rate numbers:** the demo plants problems far more often than real life, so they show how each rule behaves, not real-world performance.
 
 | Rule | Alerts | Precision | Recall | Most false positives were |
 |---|---|---|---|---|
@@ -482,7 +484,7 @@ Each rule's false positives are mostly the look-alike the simulator plants for i
 
 ## Phase 3: what's built so far
 
-Phase 3 is being built in three parts. The first is done: alerts, the warm-up, and what Kubernetes will need (Phase 3.5). Metrics and the API are still planned (below).
+Phase 3 is being built in three parts. The first two are done: alerts, the warm-up, and what Kubernetes will need (Phase 3.5); then labels and detection metrics. The rest of the API is still planned (below).
 
 ### Alerts
 
@@ -562,17 +564,43 @@ These are what Phase 3.5 needs:
 - **Consumer threads** come from one setting, `watchdog.listener.concurrency` (`WATCHDOG_LISTENER_CONCURRENCY`): 3 in Compose, 1 per pod in Kubernetes.
 - All configuration still comes from environment variables, and logs still go to stdout.
 
+### Detection metrics
+
+The simulator's labels are stored in `ground_truth_labels` by a separate listener in the `evaluation` package, in its own consumer group, so labels never pass through the detection code. A guard test checks that nothing in `rules`, `ingest`, or `alerts` mentions them. A label that can't be parsed goes to `transaction-labels.DLT`; each topic's bad messages now go to that topic's own dead-letter topic.
+
+`GET /api/stats` compares the alerts with the labels on every request, with two SQL queries, and returns per rule:
+
+| Field | Meaning |
+|---|---|
+| `alerts` | everything the rule raised |
+| `truePositives` | alerts on transactions labeled with the rule's issue type |
+| `falsePositives` | alerts on transactions labeled with anything else (look-alikes are labeled `NONE`) |
+| `unlabeledAlerts` | alerts whose label hasn't arrived yet, or never will (real bank data has no labels); not scored |
+| `scenarios` | injected scenarios of the rule's issue type whose transactions are stored |
+| `caughtScenarios`, `falseNegatives` | scenarios with at least one true positive alert, and the rest |
+| `precision` | true / (true + false) positives; `null` with no labeled alerts yet |
+| `recall` | caught / all scenarios; `null` with no scenarios yet |
+
+- **Precision counts alerts; recall counts scenarios.** A scenario is one injected incident, like a duplicated pair or a whole card-testing attack, so a caught attack counts once whichever of its charges the alert fired on. A hit on the untouched original of a duplicated pair (labeled `NONE`) is a false positive and doesn't catch the scenario.
+- **Missing labels.** Labels arrive on their own topic, so a transaction can be stored before its label. Only alerts and scenarios with both are scored; the rest show up as `unlabeledAlerts`, and a ratio with nothing to divide is `null`, not 0, because "no data yet" isn't "0%". My Python prototypes count it differently: an unlabeled alert is a false positive, and an empty ratio is 0. On a paused, caught-up run every transaction has its label, so both give the same numbers, which is how the service was checked against the prototypes (below).
+- **Throughput** is transactions stored per second over the last 60 seconds. **Latency** is `processed_at - published_at` over the last 5 minutes, as the median, 95th, and 99th percentile (Postgres's `percentile_cont`, which interpolates between neighbors). Both use the real clock, and latency assumes the simulator and the watchdog share one, which is true on one machine.
+- Everything is computed on request. That's cheap at demo size; Phase 5's benchmark will show whether it needs caching at 1,000 users.
+
 ### Testing (Phase 3 so far)
 
 `./mvnw verify` now also runs integration tests (`*IT`, through Maven Failsafe) against a real Kafka and a real Postgres in Docker containers (Testcontainers), the same images as Compose. So `verify` needs Docker running.
 
-- **Unit tests (197):** 40 schema (including the alert contract), 38 simulator, 119 in `watchdog-service`. New: the engine hands back the same hits for a retry and runs the rules normally for the next transaction; the warm-up replays before it starts the listener; the label guard test now also covers the `ingest` and `alerts` packages.
-- **Integration tests (5):**
+- **Unit tests (204):** 40 schema (including the alert contract), 38 simulator, 126 in `watchdog-service`. New: the engine hands back the same hits for a retry and runs the rules normally for the next transaction; the warm-up replays before it starts the listener; the label guard test now also covers the `ingest` and `alerts` packages; the precision and recall math, including every divide-by-zero case.
+- **Integration tests (12):**
   - a duplicated charge gives one alert row and one alert message, keyed by card, marked published;
   - a resent message never reaches the rules (if it did, duplicate-charge would match it against itself);
   - when saving an alert fails once, the retry saves exactly one alert, and its explanation says "twice", not "again", so the rule learned the charge once;
   - when publishing fails once, the retry publishes the saved alert, and every copy on the topic has the same alert ID;
-  - a real restart: the second run raises a price hike and a new-country charge that it could only catch if the warm-up replayed the card's history, and a country used only before the 90-day window is forgotten. With the window shrunk to one minute, the test fails, as it should.
+  - a real restart: the second run raises a price hike and a new-country charge that it could only catch if the warm-up replayed the card's history, and a country used only before the 90-day window is forgotten. With the window shrunk to one minute, the test fails, as it should;
+  - the metrics queries on hand-made rows covering each case: a caught duplicate, an alert on the untouched original (a false positive that doesn't catch the scenario), a look-alike, a charge posted three times (two true alerts, one scenario), an unlabeled alert, a label whose transaction hasn't arrived, and an attack nobody caught;
+  - throughput and latency on known values (eleven latencies with known percentiles), and an empty window giving nulls;
+  - a label sent twice is stored once; a bad label goes to `transaction-labels.DLT`, and a bad transaction still goes to `transactions.DLT`;
+  - `GET /api/stats` over real HTTP with REST Assured: one score per rule, every field present even when it's null.
 
 Checks on the running stack (demo preset, 2026-10-29):
 
@@ -588,13 +616,35 @@ Checks on the running stack (demo preset, 2026-10-29):
 | `WATCHDOG_LISTENER_CONCURRENCY=1` | one consumer owned all three partitions; back to three consumers without it |
 | Same seed, two fresh runs | the same 104 alerts (IDs, detectors, explanations, times) up to the same simulated day |
 
+Checks for the metrics, on a fresh run (demo preset, 2026-10-29):
+
+| Check | Result |
+|---|---|
+| Every transaction gets its label | with the simulator paused and both consumer groups at lag 0: 933 transactions and 933 labels, none missing |
+| The service vs. the Python prototypes | `/api/stats` matched `prototypes.py score` exactly for all six rules: alerts, precision, recall, and scenario counts |
+| A malformed label | landed in `transaction-labels.DLT` (same partition), with a warning in the log; `transactions.DLT` stayed empty |
+| Throughput and latency, steady state | 4.8 transactions per second at the demo's pace; p50 10.1 ms, p95 15.9 ms, p99 26.3 ms over 1,376 transactions, the same as a direct `psql` query and in line with Phase 2 (10.4, 16.6, 26.1 ms) |
+| Latency right after `up` | p99 was over a second for the first few minutes, from the transactions published before the watchdog started reading; it settled once they left the 5-minute window |
+
+**Demo-rate numbers, not real-world performance.** What `/api/stats` reported on that run, 933 transactions over 105 simulated days:
+
+| Rule | Alerts | Precision | Recall | False positives were |
+|---|---|---|---|---|
+| `card-testing` | 10 | 50% | 100% of 5 | toll road trips (5) |
+| `duplicate-charge` | 9 | 67% | 100% of 6 | double coffees (3) |
+| `new-country` | 1 | 100% | 25% of 4 | none |
+| `price-hike` | 3 | 100% | 75% of 4 | none |
+| `spending-spike` | 8 | 0% | 0% of 3 | ordinary days (4), fraud abroad (2), a trip (1), card testing (1) |
+| `trial-conversion` | 4 | 50% | 100% of 2 | App Store pairs (2) |
+
+A run this short says little, and the demo plants problems far more often than real life. Phase 5's benchmark will give the numbers worth quoting.
+
 ## Planned work
 
-### Phase 3: the rest (metrics and the API)
+### Phase 3: the rest (the API)
 
-The first part of Phase 3 is built (above). Still planned:
+Alerts, the warm-up, labels, and detection metrics are built (above). Still planned:
 
-- **Labels** get consumed into a `ground_truth_labels` table, by code in an `evaluation` package. There's no foreign key to `transactions`, because the two topics aren't ordered relative to each other. Bad labels go to `transaction-labels.DLT`.
 - **Recurring charges** for the dashboard are computed on request from the `transactions` table, reusing price-hike's "monthly at a steady price" check, so there's no second copy of the data to keep in sync. They include every steady monthly charge except income, like rent, internet, and phone bills, not only the subscriptions category, because that's what the price-hike rule watches: every hike alert then has a matching row. That's why the API calls them recurring charges, not subscriptions.
 - **The API:**
 
@@ -603,7 +653,7 @@ The first part of Phase 3 is built (above). Still planned:
 | `GET /api/transactions?userId=&limit=` | the newest transactions |
 | `GET /api/alerts?userId=&detector=&limit=` | the newest alerts, with explanations |
 | `GET /api/recurring?userId=` | recurring charges: merchant, category, price, previous price, status, next expected charge, yearly cost |
-| `GET /api/stats` | per rule: precision, recall, true and false positives, and false negatives; plus throughput and latency |
+| `GET /api/stats` | built: per rule precision, recall, and counts; throughput and latency (above) |
 | `GET /api/spending/summary?userId=&month=YYYY-MM` | income and spending grouped by Budget.io line, with a configurable CORS allow-list so Budget.io can call it from the browser |
 | `GET /api/stream` | live transactions and alerts as Server-Sent Events |
 
@@ -611,13 +661,7 @@ Bad parameters (a `limit` that isn't a number or is out of range, a month that i
 
 The stream is fed inside the watchdog process, from the transactions and alerts that process just handled, sent on its own thread so a slow browser can't hold up Kafka consumption. The catch: with several watchdog instances (Phase 3.5), each one's stream only shows the cards on its own partitions. The endpoints that read Postgres are the same from every instance.
 
-- **Metrics:**
-  - **Precision** for a rule is the share of its alerts that landed on transactions labeled with its issue type.
-  - **Recall** is the share of injected scenarios of that type with at least one alert on one of their transactions labeled with that type. Counting by scenario means a caught card-testing attack counts once, whichever of its transactions the alert fired on. A hit on the untouched original of a duplicated pair (labeled `NONE`) doesn't count.
-  - **Missing labels.** Labels arrive on their own topic, so a transaction can be stored before its label, and real transactions from Plaid will never have one. Only alerts and scenarios whose transaction and label are both stored are scored; the rest are reported as `unlabeledAlerts`. When there's nothing to divide (no labeled alerts, or no scenarios yet), precision or recall is `null`, not 0. My Python prototypes count it differently: an unlabeled alert is a false positive, and an empty ratio is 0. On a paused, caught-up run every transaction has its label, so both give the same numbers, which is how the service gets checked against the prototype.
-  - **Throughput** is transactions stored per second over the last minute.
-  - **Latency** is `processed_at - published_at`, reported as the median, 95th, and 99th percentile over the last 5 minutes. It assumes the simulator and the watchdog share a clock, which is true on one machine.
-- **Tests:** REST Assured tests for the API, integration tests for the label consumer and the metrics queries, and unit tests for the metrics math.
+- **Tests:** REST Assured tests for every endpoint and its 400s, and a test that reads the live stream.
 
 ### Kubernetes (Phase 3.5, planned)
 
@@ -759,7 +803,10 @@ Some of these cover parts that aren't built yet.
 | Integration tests | Testcontainers with the same Kafka and Postgres images as Compose, shared by every test in a run | an embedded Kafka; H2 instead of Postgres | tests run against what production runs; each test uses its own cards |
 | API port | 8082 | 8080 | Budget.io's own server uses 8080 and Kafka UI uses 8081 |
 | Recurring charges (Phase 3, planned) | every steady monthly charge except income, called "recurring charges" (`/api/recurring`) | only the subscriptions category | matches what price-hike watches, so every hike alert has a matching row |
-| Metrics with missing labels (Phase 3, planned) | score only labeled alerts, report the rest as `unlabeledAlerts`, `null` when there's nothing to divide | the prototype's counting (unlabeled = false positive, empty = 0) | numbers don't jump while labels catch up, and Plaid alerts aren't miscounted |
+| Metrics with missing labels | score only labeled alerts, report the rest as `unlabeledAlerts`, `null` when there's nothing to divide | the prototype's counting (unlabeled = false positive, empty = 0) | numbers don't jump while labels catch up, and Plaid alerts aren't miscounted |
+| Labels consumer | its own listener and consumer group in an `evaluation` package | reading labels in the transactions listener | detection code never touches the labels, and a guard test checks it |
+| Dead-letter topics | one per topic, `<topic>.DLT` | one shared DLT | a bad label shouldn't land among bad transactions |
+| Detection metrics | two SQL queries on each `/api/stats` request | counters kept in memory | labels and alerts arrive in any order, and SQL recomputes from what's stored; caching can come later if Phase 5 needs it |
 | Threshold tuning | Phase 5, on the benchmark preset, tuned on one seed and reported on another | Phase 3 on demo data | demo rates inflate precision, and reporting on the tuning data would grade the thresholds on what they were fit to |
 | Keeping rules away from the labels | a plain JUnit test that scans the rules' source | ArchUnit | no new dependency for one check |
 | Rule thresholds | one validated `Settings` record per rule, bound from `application.yml` | constants in code; `@Value` fields | tests state their own numbers, bad config stops startup, and environment variables can override |
