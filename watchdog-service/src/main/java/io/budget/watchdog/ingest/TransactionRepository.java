@@ -7,6 +7,9 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -14,7 +17,7 @@ import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
-/** Stores transactions with plain SQL through Spring's JdbcClient. */
+/** Stores and reads transactions with plain SQL through Spring's JdbcClient. */
 @Repository
 public class TransactionRepository {
 
@@ -75,6 +78,62 @@ public class TransactionRepository {
                 .withFetchSize(1_000)
                 .param("from", utc(from))
                 .query((RowCallbackHandler) row -> action.accept(toTransaction(row))); // called once per row
+    }
+
+    /** The newest transactions, by event time, for one user or (with a null userId) everyone. */
+    public List<Transaction> recent(String userId, int limit) {
+        return jdbc.sql("""
+                        SELECT * FROM transactions
+                        WHERE CAST(:userId AS text) IS NULL OR user_id = :userId
+                        ORDER BY occurred_at DESC, processed_at DESC
+                        LIMIT :limit
+                        """)
+                .param("userId", userId)
+                .param("limit", limit)
+                .query((row, n) -> toTransaction(row))
+                .list();
+    }
+
+    /**
+     * One user's transactions since {@code from}, each card and merchant together, in the order they happened (event
+     * time). The rules follow arrival order because they stream; this reads history, so a charge that arrives late
+     * still lands where it belongs. Ties fall back to arrival order.
+     */
+    public List<Transaction> forUserSince(String userId, Instant from) {
+        return jdbc.sql("""
+                        SELECT * FROM transactions
+                        WHERE user_id = :userId AND occurred_at >= :from
+                        ORDER BY card_id, merchant, occurred_at, processed_at, transaction_id
+                        """)
+                .param("userId", userId)
+                .param("from", utc(from))
+                .query((row, n) -> toTransaction(row))
+                .list();
+    }
+
+    /** The event time of one user's newest transaction: "now" for that user, since simulated time runs ahead. */
+    public Optional<Instant> newestOccurredAtFor(String userId) {
+        return jdbc.sql("SELECT occurred_at FROM transactions WHERE user_id = :userId ORDER BY occurred_at DESC LIMIT 1")
+                .param("userId", userId)
+                .query(OffsetDateTime.class)
+                .optional()
+                .map(OffsetDateTime::toInstant);
+    }
+
+    /** One user's totals per category for transactions that occurred in [start, end). */
+    public Map<Category, Long> totalsByCategory(String userId, Instant start, Instant end) {
+        Map<Category, Long> totals = new EnumMap<>(Category.class);
+        jdbc.sql("""
+                        SELECT category, sum(amount_cents) AS cents FROM transactions
+                        WHERE user_id = :userId AND occurred_at >= :start AND occurred_at < :end
+                        GROUP BY category
+                        """)
+                .param("userId", userId)
+                .param("start", utc(start))
+                .param("end", utc(end))
+                .query((RowCallbackHandler) row -> totals.put(Category.valueOf(row.getString("category")),
+                        row.getLong("cents")));
+        return totals;
     }
 
     private static Transaction toTransaction(ResultSet row) throws SQLException {

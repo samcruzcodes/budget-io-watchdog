@@ -10,6 +10,10 @@ server:
 spring:
   application:
     name: watchdog
+  mvc:
+    problemdetails:
+      # Errors, like a 400 for a bad parameter, come back as standard problem JSON (RFC 9457) saying what was wrong.
+      enabled: true
   lifecycle:
     # How long each shutdown step may take. Phase 3.5 gives the pod 45 s after SIGTERM, so this has to fit inside it.
     timeout-per-shutdown-phase: 30s
@@ -43,6 +47,10 @@ management:
         enabled: true
 
 watchdog:
+  api:
+    # Browser pages allowed to read /api/spending/summary from another origin: Budget.io's Vite dev server by default.
+    # A comma-separated list in WATCHDOG_API_CORSALLOWEDORIGINS.
+    cors-allowed-origins: http://localhost:5173
   listener:
     # Consumer threads in this process. 3 in Compose (one per partition); Phase 3.5 sets 1 per Kubernetes pod.
     concurrency: 3

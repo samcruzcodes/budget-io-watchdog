@@ -12,7 +12,7 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
-/** Stores alerts with plain SQL. The table doubles as the record of which alerts Kafka has confirmed. */
+/** Stores and reads alerts with plain SQL. The table doubles as the record of which alerts Kafka has confirmed. */
 @Repository
 public class AlertRepository {
 
@@ -62,6 +62,22 @@ public class AlertRepository {
                 .param("publishedAt", utc(publishedAt))
                 .param("alertId", alertId)
                 .update();
+    }
+
+    /** The newest alerts, by event time, optionally for one user and one detector (null means any). */
+    public List<Alert> recent(String userId, String detector, int limit) {
+        return jdbc.sql("""
+                        SELECT * FROM alerts
+                        WHERE (CAST(:userId AS text) IS NULL OR user_id = :userId)
+                          AND (CAST(:detector AS text) IS NULL OR detector = :detector)
+                        ORDER BY occurred_at DESC, detector
+                        LIMIT :limit
+                        """)
+                .param("userId", userId)
+                .param("detector", detector)
+                .param("limit", limit)
+                .query(AlertRepository::toAlert)
+                .list();
     }
 
     private static Alert toAlert(ResultSet row, int rowNumber) throws SQLException {
