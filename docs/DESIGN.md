@@ -7,7 +7,7 @@ Watchdog watches card transactions as they happen and flags two kinds of problem
 
 It's the next version of Budget.io, my manual budget planner. This doc covers how Watchdog works, why I built it this way, and where it's going.
 
-**Status:** Phases 1 and 2 are built and tested: the transaction pipeline, and six detection rules that check every new transaction. Phase 3 is in progress. Its first two parts are built: every hit becomes an alert that's saved and published, a restarted watchdog rebuilds its rule memory before it reads Kafka, there are health checks and integration tests, and the service measures its own precision and recall against the simulator's labels (`GET /api/stats`). The rest of the REST API and the live stream are still planned. Everything not built yet is marked that way below.
+**Status:** Phases 1 to 3 are built and tested: the transaction pipeline; six detection rules that check every new transaction; alerts that are saved and published; a warm-up that rebuilds rule memory after a restart; precision and recall measured against the simulator's labels; a REST API with a live stream; health checks; and integration and API tests against real Kafka and Postgres. Everything after Phase 3 is planned and marked that way below.
 
 ## Roadmap
 
@@ -15,7 +15,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 |---|---|---|
 | 1 | Transaction pipeline: a simulator, Kafka, and a Spring Boot service that validates transactions and stores them in PostgreSQL | Done |
 | 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
-| 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | In progress: alerts, the warm-up, health checks, and detection metrics are built |
+| 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | Done |
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | Planned |
 | 4 | Dashboard, with a Selenium end-to-end test | Planned |
 | 5 | CI with GitHub Actions, and benchmark results in the README | Planned |
@@ -44,7 +44,7 @@ Watchdog has a fixed list of categories. It's more detailed than Budget.io's bec
 | `SUBSCRIPTIONS` | Subscriptions (a custom line) |
 | `TRAVEL` | Travel (a custom line) |
 
-Budget.io already supports custom expense lines, so the two new ones need no changes there. The plan (Phase 3) is an endpoint, `GET /api/spending/summary?userId=…&month=YYYY-MM`, that returns income and spending grouped by Budget.io line, so the planner could eventually fill itself in instead of relying on manual entry.
+Budget.io already supports custom expense lines, so the two new ones need no changes there. Phase 3 added an endpoint, `GET /api/spending/summary?userId=…&month=YYYY-MM`, that returns income and spending grouped by Budget.io line, so the planner could eventually fill itself in instead of relying on manual entry. Budget.io doesn't call it yet.
 
 Two other differences from Budget.io:
 
@@ -90,13 +90,13 @@ flowchart LR
     RULES --> AL
     LB --> EVAL
     EVAL --> PG
-    PG -.-> API
+    PG --> API
     API -.-> DASH
     API -.-> BIO
     PG -.-> NB
 
     classDef planned stroke-dasharray: 5 5
-    class PLAID,API,DASH,NB,BIO planned
+    class PLAID,DASH,NB,BIO planned
 ```
 
 Solid boxes and arrows exist today. Dashed ones are planned.
@@ -105,7 +105,7 @@ Solid boxes and arrows exist today. Dashed ones are planned.
 2. The watchdog reads `transactions`, validates each message, and stores it once in PostgreSQL. Messages it can't parse go to `transactions.DLT`.
 3. The detection rules check each new transaction. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to `alerts`.
 4. An evaluation step stores the labels and compares them with the alerts to measure precision and recall (`GET /api/stats`). The rules never see the labels.
-5. Planned: the rest of the REST API, with live updates, feeds the dashboard, and later the Budget.io planner.
+5. A REST API with live updates serves what's stored. Planned: the dashboard (Phase 4), and later the Budget.io planner, read it.
 
 **Why Kafka sits in the middle.** The simulator never talks to the watchdog or the database directly. Kafka holds every message until the watchdog reads it, so the watchdog can go down, come back, and pick up where it left off. Stopping the watchdog for 20 seconds while the simulator kept running shows this: 130 transactions piled up in Kafka, and within seconds of the restart they were all stored, none lost. It also means other programs can read the same stream later without the simulator knowing about them. The tradeoff is that Kafka is one more system to run and understand.
 
@@ -272,7 +272,7 @@ Flyway applies numbered SQL migrations at startup. A committed migration never c
 | `kafka-init` | `apache/kafka:4.2.2` | creates the topics, then exits | none |
 | `postgres` | `postgres:18.6-alpine` | storage | 5432 |
 | `simulator` | built from `simulator/Dockerfile` | the transaction source | none |
-| `watchdog` | built from `watchdog-service/Dockerfile` | consumer, rules, alerts, health checks (the API comes later in Phase 3) | 8082 |
+| `watchdog` | built from `watchdog-service/Dockerfile` | consumer, rules, alerts, metrics, the REST API, health checks | 8082 |
 | `kafka-ui` | `kafbat/kafka-ui:v1.5.0`, profile `tools` | browse topics and messages | 8081 |
 
 | Topic | Partitions | Key |
@@ -482,9 +482,9 @@ Each rule's false positives are mostly the look-alike the simulator plants for i
 - **The cross-check found a bug in the checker.** The first Java-versus-Python comparison said every line differed. Python's CSV writer ends lines with `\r\n`; once fixed, the hits matched exactly.
 - **Long runs use up the simulator's scenarios.** Each user can try each of the 7 trial offers once and visit each of 10 countries, so a 60-year run had only 13 trial conversions and 18 new-country frauds, against hundreds of App Store pairs. Fine for the demo and a one-year benchmark, but worth knowing before reading long-run numbers.
 
-## Phase 3: what's built so far
+## Phase 3: what's built
 
-Phase 3 is being built in three parts. The first two are done: alerts, the warm-up, and what Kubernetes will need (Phase 3.5); then labels and detection metrics. The rest of the API is still planned (below).
+Phase 3 was built in three parts: alerts, the warm-up, and what Kubernetes will need (Phase 3.5); then labels and detection metrics; then the REST API and the live stream.
 
 ### Alerts
 
@@ -586,12 +586,32 @@ The simulator's labels are stored in `ground_truth_labels` by a separate listene
 - **Throughput** is transactions stored per second over the last 60 seconds. **Latency** is `processed_at - published_at` over the last 5 minutes, as the median, 95th, and 99th percentile (Postgres's `percentile_cont`, which interpolates between neighbors). Both use the real clock, and latency assumes the simulator and the watchdog share one, which is true on one machine.
 - Everything is computed on request. That's cheap at demo size; Phase 5's benchmark will show whether it needs caching at 1,000 users.
 
-### Testing (Phase 3 so far)
+### The REST API
+
+The API reads Postgres, so it answers the same from any watchdog instance. Money is in cents and times are ISO-8601 in UTC, like the messages.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/transactions?userId=&limit=` | the newest transactions, by event time (`userId` optional; `limit` 1 to 500, default 50) |
+| `GET /api/alerts?userId=&detector=&limit=` | the newest alerts with their explanations (`detector` is a rule ID) |
+| `GET /api/recurring?userId=` | the user's recurring charges: merchant, category, price, previous price, status, last charge, next expected charge, yearly cost |
+| `GET /api/stats` | per rule precision, recall, and counts; throughput and latency (above) |
+| `GET /api/spending/summary?userId=&month=YYYY-MM` | the month's income, and spending per Budget.io line, zeros included, in a fixed order |
+| `GET /api/stream` | live `transaction` and `alert` events, as Server-Sent Events |
+
+- **Bad parameters** get a 400 with Spring's standard problem JSON (RFC 9457), whose `detail` says what was wrong: a `limit` that isn't a number or is out of range, a missing `userId` where it's required, a month that isn't `YYYY-MM`, or a detector that isn't a rule ID (a typo would otherwise quietly return nothing). The checks are a few lines by hand, with no validation library. An unknown user isn't an error: they get an empty list or zeros.
+- **"Now" is the user's newest transaction,** never the wall clock, for anything that needs it (a recurring charge's status and next expected date), because the demo's simulated time runs years ahead.
+- **Recurring charges** are worked out on each request from the user's last 105 simulated days (three monthly gaps), reading each merchant's charges in the order they happened (event time). The rules follow arrival order because they stream; the API reads history, so a charge that arrives late still lands where it belongs. They use the price-hike rule's own check, now a shared `MonthlyPattern` class, so the list and the alerts always agree. A merchant whose last two charges were a month apart at a steady price is `ACTIVE`; steady for two months and then more than 1% higher is `PRICE_UP`, which is exactly what price-hike alerts on; no charge for more than 35 days after the last one is `OVERDUE`. That includes rent, internet, and phone bills, not only subscriptions, which is why they're called recurring charges. A bill whose price moves every month, like electricity, isn't listed. Nothing is stored, so there's no second copy of anything to keep in sync.
+- **The spending summary** adds up the month (UTC) per category and rolls the categories up into Budget.io's lines (groceries and dining are both Food). It's the one endpoint with CORS, because Budget.io would call it from the browser: the allow-list is `watchdog.api.cors-allowed-origins` (`WATCHDOG_API_CORSALLOWEDORIGINS`), Budget.io's Vite dev server by default. The dashboard (Phase 4) will be served from the same origin as the API, so it needs none.
+- **The live stream** uses Server-Sent Events instead of WebSockets because the data only flows one way, and browsers reconnect by themselves. The Kafka listener hands each new transaction and alert to one background thread that sends them to every open connection, so a slow browser can't hold up Kafka; if that thread falls 1,000 events behind, new events are dropped and counted in the log. Open streams are closed first at shutdown, so they don't hold up graceful shutdown. It only shows what its own process handled: with several watchdog instances (Phase 3.5), each stream shows the cards on that instance's partitions.
+- New indexes on `transactions` (`occurred_at`, and `(user_id, occurred_at)`) keep the newest-first lists and the per-user reads from scanning the table.
+
+### Testing (Phase 3)
 
 `./mvnw verify` now also runs integration tests (`*IT`, through Maven Failsafe) against a real Kafka and a real Postgres in Docker containers (Testcontainers), the same images as Compose. So `verify` needs Docker running.
 
-- **Unit tests (204):** 40 schema (including the alert contract), 38 simulator, 126 in `watchdog-service`. New: the engine hands back the same hits for a retry and runs the rules normally for the next transaction; the warm-up replays before it starts the listener; the label guard test now also covers the `ingest` and `alerts` packages; the precision and recall math, including every divide-by-zero case.
-- **Integration tests (12):**
+- **Unit tests (221):** 40 schema (including the alert contract), 38 simulator, 143 in `watchdog-service`. New: the engine hands back the same hits for a retry and runs the rules normally for the next transaction; the warm-up replays before it starts the listener; the label guard test now also covers the `ingest` and `alerts` packages; the precision and recall math, including every divide-by-zero case; the monthly check's edges; recurring charges (steady, a hike, rent, a varying bill, a bill that went up this month, back-to-back hikes, a weekly merchant, a single charge, overdue, income); the spending summary's roll-up into Budget.io lines.
+- **Integration tests (30):**
   - a duplicated charge gives one alert row and one alert message, keyed by card, marked published;
   - a resent message never reaches the rules (if it did, duplicate-charge would match it against itself);
   - when saving an alert fails once, the retry saves exactly one alert, and its explanation says "twice", not "again", so the rule learned the charge once;
@@ -600,7 +620,9 @@ The simulator's labels are stored in `ground_truth_labels` by a separate listene
   - the metrics queries on hand-made rows covering each case: a caught duplicate, an alert on the untouched original (a false positive that doesn't catch the scenario), a look-alike, a charge posted three times (two true alerts, one scenario), an unlabeled alert, a label whose transaction hasn't arrived, and an attack nobody caught;
   - throughput and latency on known values (eleven latencies with known percentiles), and an empty window giving nulls;
   - a label sent twice is stored once; a bad label goes to `transaction-labels.DLT`, and a bad transaction still goes to `transactions.DLT`;
-  - `GET /api/stats` over real HTTP with REST Assured: one score per rule, every field present even when it's null.
+  - `GET /api/stats` over real HTTP with REST Assured: one score per rule, every field present even when it's null;
+  - every other endpoint over real HTTP, on rows written for one user so the expected numbers can be worked out by hand: newest-first transactions with a limit, alerts filtered by detector, recurring charges (`ACTIVE`, `PRICE_UP`, a varying bill left out), a month's summary with both of its edges, an unknown user, ten bad parameters each getting a 400 problem JSON that names the problem, and CORS allowed for Budget.io's origin on the summary only;
+  - a client connected to `/api/stream` receives the two transactions and the alert of a duplicated charge sent through Kafka.
 
 Checks on the running stack (demo preset, 2026-10-29):
 
@@ -639,29 +661,18 @@ Checks for the metrics, on a fresh run (demo preset, 2026-10-29):
 
 A run this short says little, and the demo plants problems far more often than real life. Phase 5's benchmark will give the numbers worth quoting.
 
-## Planned work
+Checks for the API, on a fresh run (demo preset, 2026-10-29):
 
-### Phase 3: the rest (the API)
-
-Alerts, the warm-up, labels, and detection metrics are built (above). Still planned:
-
-- **Recurring charges** for the dashboard are computed on request from the `transactions` table, reusing price-hike's "monthly at a steady price" check, so there's no second copy of the data to keep in sync. They include every steady monthly charge except income, like rent, internet, and phone bills, not only the subscriptions category, because that's what the price-hike rule watches: every hike alert then has a matching row. That's why the API calls them recurring charges, not subscriptions.
-- **The API:**
-
-| Endpoint | Returns |
+| Check | Result |
 |---|---|
-| `GET /api/transactions?userId=&limit=` | the newest transactions |
-| `GET /api/alerts?userId=&detector=&limit=` | the newest alerts, with explanations |
-| `GET /api/recurring?userId=` | recurring charges: merchant, category, price, previous price, status, next expected charge, yearly cost |
-| `GET /api/stats` | built: per rule precision, recall, and counts; throughput and latency (above) |
-| `GET /api/spending/summary?userId=&month=YYYY-MM` | income and spending grouped by Budget.io line, with a configurable CORS allow-list so Budget.io can call it from the browser |
-| `GET /api/stream` | live transactions and alerts as Server-Sent Events |
+| The live stream | `curl -N localhost:8082/api/stream` showed 29 transactions in 6 seconds, and alerts once the simulator started planting problems |
+| Recurring charges for the three demo users | 8 to 12 each, by hand against their transactions: subscriptions, rent, internet, and phone `ACTIVE`; earlier planted hikes `ACTIVE` at their new price; the electricity bill not listed; one water bill `PRICE_UP`, matching price-hike's one false positive on that run; one subscription that went up two months running dropped off (see Known limitations) |
+| A month's spending summary | equal to the same month summed by category in `psql`, with groceries and dining added into Food |
+| Bad parameters on the stack | `limit=abc`, an unknown detector, a missing `userId`, and `month=2026-3` each got a 400 problem JSON naming the problem |
+| CORS | a preflight from `http://localhost:5173` got `Access-Control-Allow-Origin`; one from another origin got 403 |
+| `docker compose stop watchdog` with a stream open | 0.76 seconds; the stream closed before the web server's graceful shutdown started, and the next start redelivered nothing |
 
-Bad parameters (a `limit` that isn't a number or is out of range, a month that isn't `YYYY-MM`, a missing required `userId`, an unknown detector) get a 400 with Spring's standard problem JSON. Live updates use Server-Sent Events instead of WebSockets because the data only flows one way, from the server to the browser, and browsers reconnect automatically.
-
-The stream is fed inside the watchdog process, from the transactions and alerts that process just handled, sent on its own thread so a slow browser can't hold up Kafka consumption. The catch: with several watchdog instances (Phase 3.5), each one's stream only shows the cards on its own partitions. The endpoints that read Postgres are the same from every instance.
-
-- **Tests:** REST Assured tests for every endpoint and its 400s, and a test that reads the live stream.
+## Planned work
 
 ### Kubernetes (Phase 3.5, planned)
 
@@ -732,7 +743,9 @@ My plan: measure the gap first, by running the same seed with 1 pod and with 3 a
 
 ### Phase 4: dashboard
 
-A React, Vite, and TypeScript dashboard, served by nginx. It keeps Budget.io's identity (the name, Poppins headings, the `#4CAF50` green, the `#F4F4F9` background) but with hand-written CSS instead of Bootstrap, and a darker green (`#2E7D32`) for text, because `#4CAF50` on white fails WCAG AA contrast. The plan is a live transaction feed, alerts with plain-English explanations, the subscriptions list, and a detection-quality table. A Selenium test will run it headless against the full stack.
+A React, Vite, and TypeScript dashboard, served by nginx. It keeps Budget.io's identity (the name, Poppins headings, the `#4CAF50` green, the `#F4F4F9` background) but with hand-written CSS instead of Bootstrap, and a darker green (`#2E7D32`) for text, because `#4CAF50` on white fails WCAG AA contrast. The plan is a live transaction feed, alerts with plain-English explanations, the recurring charges, and a detection-quality table.
+
+A note for Phase 4, not built: the recurring list could include every monthly charge by its timing alone, with a status of steady, varies, or price up (price up using the rule's definition). Then bills like utilities would show up as "varies", and a subscription couldn't drop off the list after two hikes in a row. A Selenium test will run it headless against the full stack.
 
 ### Phase 5: CI and benchmark
 
@@ -787,7 +800,7 @@ Some of these cover parts that aren't built yet.
 | Simulator | plain Java with the Kafka client, seeded, planned day by day | a Spring Boot app | shows the raw producer API, and runs are reproducible |
 | Simulated users | personas in exact proportion; 3 for the demo, about 1,000 for the benchmark | a single user | realistic variety for the benchmark and the dataset |
 | Live updates | Server-Sent Events | WebSockets; polling | one-way push over plain HTTP, with automatic reconnects |
-| Where the live stream's events come from (Phase 3, planned) | inside each watchdog process, sent on its own thread | a second Kafka consumer per instance with its own group | simple, and a slow browser can't stall consumption; with several instances each stream only shows its own partitions |
+| Where the live stream's events come from | inside each watchdog process, sent on its own thread | a second Kafka consumer per instance with its own group | simple, and a slow browser can't stall consumption; with several instances each stream only shows its own partitions |
 | Dashboard styling | hand-written CSS | Bootstrap; Tailwind; component kits | its own look, and every style is something I can explain |
 | Demo state | in memory, fresh on every `up` | named volumes | a repeatable demo with no stale data |
 | End-to-end test | Selenium with headless Chrome | Playwright; Cypress | it's the browser-testing tool I picked for this project's stack |
@@ -802,7 +815,12 @@ Some of these cover parts that aren't built yet.
 | Detector name | plain text (`detector`) | an enum of rule IDs | an ML detector's alerts fit the same table |
 | Integration tests | Testcontainers with the same Kafka and Postgres images as Compose, shared by every test in a run | an embedded Kafka; H2 instead of Postgres | tests run against what production runs; each test uses its own cards |
 | API port | 8082 | 8080 | Budget.io's own server uses 8080 and Kafka UI uses 8081 |
-| Recurring charges (Phase 3, planned) | every steady monthly charge except income, called "recurring charges" (`/api/recurring`) | only the subscriptions category | matches what price-hike watches, so every hike alert has a matching row |
+| Bad API parameters | checked by hand, 400 with Spring's problem JSON | Bean Validation annotations | a few checks don't justify a new dependency, and the messages say exactly what was wrong |
+| CORS | only `/api/spending/**`, from a configured allow-list | every endpoint | Budget.io is the only cross-origin caller; the dashboard will share the API's origin |
+| "Now" in the API | the user's newest transaction | the wall clock | simulated time runs years ahead |
+| Order of history in the API | event time (`occurred_at`), ties by arrival | arrival order, like the rules | the rules stream, so they follow arrival order; the API reads history, and late data should land where it happened |
+| Back-to-back hikes in the recurring list | keep the rule's definition (a steady price before the hike), so the list and the alerts agree | `PRICE_UP` from the monthly gaps alone | I tried loosening the check so back-to-back hikes stay listed, but on the demo data it flagged five utility bills as price hikes, so I reverted it. Back-to-back hikes stay a documented blind spot. |
+| Recurring charges | every steady monthly charge except income, called "recurring charges" (`/api/recurring`) | only the subscriptions category | matches what price-hike watches, so every hike alert has a matching row |
 | Metrics with missing labels | score only labeled alerts, report the rest as `unlabeledAlerts`, `null` when there's nothing to divide | the prototype's counting (unlabeled = false positive, empty = 0) | numbers don't jump while labels catch up, and Plaid alerts aren't miscounted |
 | Labels consumer | its own listener and consumer group in an `evaluation` package | reading labels in the transactions listener | detection code never touches the labels, and a guard test checks it |
 | Dead-letter topics | one per topic, `<topic>.DLT` | one shared DLT | a bad label shouldn't land among bad transactions |
@@ -849,6 +867,8 @@ Some of these cover parts that aren't built yet.
 - The spending-spike z-score assumes daily totals are roughly normal. Real spending is skewed, which causes extra false positives: on the first Phase 2 test run it flagged 12 ordinary days, out of 60 hits. Phase 6 should measure this properly.
 - Trial-conversion on storefront merchants: a merchant that sells many things under one name, like an app store, can hide a real conversion. An unrelated purchase from it in the first 5 days after a trial signup makes the rule forget the signup. Accepted, because the hold fix it comes from is worth more.
 - New-country fires on a real trip if the first charge in the new country comes more than 30 days after the last travel purchase: booking a flight further ahead, or moving on to a second country late in a long trip without buying anything new in the travel category. The simulator books at most 25 days ahead and each trip is one country, so the demo data doesn't show it, but real people often book further out.
+- Recurring charges share price-hike's blind spot: after two hikes in a row, the last two charges aren't steady, so the merchant drops off the list until it's steady again. On the demo run, one subscription that went up two months running disappeared this way.
+- The API has no authentication. It's bound to 127.0.0.1 in Compose, and any user's data can be read by ID. A real deployment would need users to sign in.
 - The rules assume each card's transactions arrive in time order, and they use UTC days. Real bank data arrives late and out of order, and days depend on the cardholder's time zone.
 - New cards have no history. The simulator waits 30 simulated days before injecting anything, but a real system would need a fallback, like population-wide baselines.
 - Thresholds and simulator rates are starting values.
