@@ -1,9 +1,18 @@
 # Defaults for running the service on your machine against `docker compose up` (Kafka on localhost:9094, Postgres on
 # localhost:5432). In Compose, environment variables override them: SPRING_KAFKA_BOOTSTRAP_SERVERS maps onto
 # spring.kafka.bootstrap-servers, SPRING_DATASOURCE_URL onto spring.datasource.url, and so on.
+server:
+  # Not 8080: Budget.io's own server uses it, and Kafka UI uses 8081. SERVER_PORT overrides it.
+  port: 8082
+  # On SIGTERM, stop taking new requests and let running ones finish (Kubernetes sends SIGTERM before killing a pod).
+  shutdown: graceful
+
 spring:
   application:
     name: watchdog
+  lifecycle:
+    # How long each shutdown step may take. Phase 3.5 gives the pod 45 s after SIGTERM, so this has to fit inside it.
+    timeout-per-shutdown-phase: 30s
   datasource:
     url: jdbc:postgresql://localhost:5432/watchdog
     username: watchdog
@@ -16,13 +25,32 @@ spring:
       # Messages are JSON strings; MessageJson turns them into records (see TransactionParser).
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      # On shutdown, finish the message in hand and commit, instead of working through the rest of the fetched batch.
+      immediate-stop: true
     producer:
       # Publishes alerts, and failed messages to the dead-letter topic. A send only succeeds once Kafka has stored it.
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
+management:
+  endpoint:
+    health:
+      # /actuator/health/liveness ("restart me if I'm stuck") and /actuator/health/readiness ("I'm ready to work",
+      # which here means the warm-up is done). Kubernetes turns these on by itself; this makes them exist in Compose too.
+      probes:
+        enabled: true
+
 watchdog:
+  listener:
+    # Consumer threads in this process. 3 in Compose (one per partition); Phase 3.5 sets 1 per Kubernetes pod.
+    concurrency: 3
+  warm-up:
+    # How much stored history to replay through the rules at startup, counted back from the newest occurred_at.
+    # 90 days covers the longest look-back: price-hike needs two earlier monthly charges.
+    lookback: 90d
+
   # Detection rule thresholds: starting values, explained in docs/DESIGN.md. Each rule's Settings record rejects bad
   # values at startup. Environment variables override them too, e.g. WATCHDOG_RULES_DUPLICATECHARGE_WINDOW=5m.
   rules:

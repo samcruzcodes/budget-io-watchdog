@@ -20,12 +20,16 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Consumes the {@code transactions} topic. Spring runs 3 consumer threads in the group "watchdog"; Kafka gives each
- * one partition, so all of a card's transactions are handled in order by one thread. Spring calls this method once
- * per message and commits the offset after it returns, so a crash means redelivery, never loss (at-least-once).
+ * Consumes the {@code transactions} topic in the group "watchdog", with {@code watchdog.listener.concurrency} consumer
+ * threads (3 in Compose). All of a card's transactions are on one partition, so one thread handles them in order.
+ * Spring calls this method once per message and commits the offset after it returns, so a crash means redelivery,
+ * never loss (at-least-once). It doesn't start with the app: {@link WarmUp} starts it once rule memory is rebuilt.
  */
 @Component
 public class TransactionListener {
+
+    /** The listener's ID, so the warm-up can start it. */
+    public static final String ID = "transactions";
 
     private static final Logger log = LoggerFactory.getLogger(TransactionListener.class);
 
@@ -52,7 +56,8 @@ public class TransactionListener {
     /** What storing one message did: whether the transaction was new, and the alerts still to publish. */
     private record Stored(boolean isNew, List<Alert> toPublish) {}
 
-    @KafkaListener(topics = Topics.TRANSACTIONS, groupId = "watchdog", concurrency = "3")
+    @KafkaListener(id = ID, topics = Topics.TRANSACTIONS, groupId = "watchdog",
+            concurrency = "${watchdog.listener.concurrency:3}", autoStartup = "false")
     public void onTransaction(ConsumerRecord<String, String> record) {
         Transaction tx = parser.parse(record.value()); // invalid -> InvalidTransactionException -> dead-letter topic
 

@@ -102,6 +102,9 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/watchdog
       SPRING_DATASOURCE_USERNAME: watchdog
       SPRING_DATASOURCE_PASSWORD: watchdog
+    ports:
+      # Health checks now, the REST API later. Not 8080: Budget.io's own server uses it, and Kafka UI has 8081.
+      - "127.0.0.1:8082:8082"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
