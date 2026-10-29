@@ -76,10 +76,9 @@ class RuleEngineTest {
     void aCardIsNeverEvaluatedOnTwoThreadsAtOnce() throws InterruptedException {
         CountingRule counter = new CountingRule();
         RuleEngine engine = new RuleEngine(List.of(counter));
-        Transaction tx = charge().build();
         Runnable halfTheWork = () -> {
             for (int i = 0; i < 50_000; i++) {
-                engine.evaluate(tx);
+                engine.evaluate(charge().build()); // a new ID each time, so none of them looks like a retry
             }
         };
 
@@ -92,6 +91,47 @@ class RuleEngineTest {
 
         // The counter isn't thread-safe, so without the engine's per-card lock the two threads would lose updates.
         assertThat(counter.seen).isEqualTo(100_000);
+    }
+
+    @Test
+    void aRetryOfTheSameTransactionGetsTheSameHitsWithoutRunningTheRulesAgain() {
+        FakeRule rule = new FakeRule("a-fires", IssueType.DUPLICATE_CHARGE, true);
+        RuleEngine engine = new RuleEngine(List.of(rule));
+        Transaction tx = charge().build();
+
+        List<RuleHit> first = engine.evaluate(tx);
+        List<RuleHit> retry = engine.evaluate(tx);
+
+        assertThat(retry).isEqualTo(first).hasSize(1);
+        assertThat(rule.seen()).containsExactly(tx);
+    }
+
+    @Test
+    void theNextTransactionRunsTheRulesAsUsual() {
+        FakeRule rule = new FakeRule("a-fires", IssueType.DUPLICATE_CHARGE, true);
+        RuleEngine engine = new RuleEngine(List.of(rule));
+        Transaction first = charge().build();
+        Transaction second = charge().build();
+
+        engine.evaluate(first);
+        engine.evaluate(second);
+        engine.evaluate(first); // not a retry anymore: the card has moved on
+
+        assertThat(rule.seen()).containsExactly(first, second, first);
+    }
+
+    @Test
+    void eachCardRemembersOnlyItsOwnLastTransaction() {
+        FakeRule rule = new FakeRule("a-fires", IssueType.DUPLICATE_CHARGE, true);
+        RuleEngine engine = new RuleEngine(List.of(rule));
+        Transaction onCardOne = charge().card("card-0001").build();
+        Transaction onCardTwo = charge().card("card-0002").build();
+
+        engine.evaluate(onCardOne);
+        engine.evaluate(onCardTwo);
+        engine.evaluate(onCardOne); // card one's last transaction is still this one, so it's a retry
+
+        assertThat(rule.seen()).containsExactly(onCardOne, onCardTwo);
     }
 
     /** Counts what it's shown with a plain int, deliberately not thread-safe. */

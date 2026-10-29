@@ -17,14 +17,14 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     producer:
-      # Used to publish failed messages to the dead-letter topic.
+      # Publishes alerts, and failed messages to the dead-letter topic. A send only succeeds once Kafka has stored it.
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
-# Detection rule thresholds: starting values, explained in docs/DESIGN.md. Each rule's Settings record rejects bad
-# values at startup. Environment variables override them too, e.g. WATCHDOG_RULES_DUPLICATECHARGE_WINDOW=5m.
 watchdog:
+  # Detection rule thresholds: starting values, explained in docs/DESIGN.md. Each rule's Settings record rejects bad
+  # values at startup. Environment variables override them too, e.g. WATCHDOG_RULES_DUPLICATECHARGE_WINDOW=5m.
   rules:
     duplicate-charge:
       window: 10m

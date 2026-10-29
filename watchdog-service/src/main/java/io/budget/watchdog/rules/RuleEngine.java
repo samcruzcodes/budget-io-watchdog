@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,28 +25,46 @@ public class RuleEngine {
     // old thread's changes to the card's state if they hand over through a lock. It also covers Phase 3's warm-up.
     private final Map<String, Object> cardLocks = new ConcurrentHashMap<>();
 
+    /** The last transaction the rules saw for a card, and what they said about it. */
+    private record LastResult(UUID transactionId, List<RuleHit> hits) {}
+
+    // If saving a transaction's alerts fails, the database rolls the transaction back and Kafka retries the same
+    // message. The rules have already learned it, and running them again would make it a duplicate of itself, so the
+    // retry gets the remembered hits instead. A retry is always the card's latest transaction: each card is on one
+    // partition, and the error handler retries the failed message before anything after it.
+    private final Map<String, LastResult> lastByCard = new ConcurrentHashMap<>();
+
     public RuleEngine(List<DetectionRule> rules) {
         // Sorted, so hits always come out in the same order.
         this.rules = rules.stream().sorted(Comparator.comparing(DetectionRule::id)).toList();
         log.info("Detection rules: {}", this.rules.stream().map(DetectionRule::id).toList());
     }
 
-    /** The hits for one new transaction, in rule ID order. Income is money coming in, so no rule looks at it. */
+    /**
+     * The hits for one new transaction, in rule ID order. Income is money coming in, so no rule looks at it. Called
+     * again with the same transaction right after (a retry), it returns the same hits without running the rules.
+     */
     public List<RuleHit> evaluate(Transaction tx) {
         if (tx.category() == Category.INCOME) {
             return List.of();
         }
         List<RuleHit> hits = new ArrayList<>();
         synchronized (cardLocks.computeIfAbsent(tx.cardId(), card -> new Object())) {
+            LastResult last = lastByCard.get(tx.cardId());
+            if (last != null && last.transactionId().equals(tx.transactionId())) {
+                return last.hits();
+            }
             for (DetectionRule rule : rules) {
                 try {
                     rule.evaluate(tx).ifPresent(hits::add);
                 } catch (RuntimeException e) {
-                    // A bug in one rule shouldn't hide the other rules' hits. Rethrowing wouldn't help either:
-                    // Kafka's retry would find the transaction already stored and skip every rule.
+                    // A bug in one rule shouldn't hide the other rules' hits. Rethrowing wouldn't help either: the
+                    // retry would hit the same bug, and the rules before it would learn the transaction twice.
                     log.error("Rule {} failed on transaction {}", rule.id(), tx.transactionId(), e);
                 }
             }
+            hits = List.copyOf(hits);
+            lastByCard.put(tx.cardId(), new LastResult(tx.transactionId(), hits));
         }
         return hits;
     }
