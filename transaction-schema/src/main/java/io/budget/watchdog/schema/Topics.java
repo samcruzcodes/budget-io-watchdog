@@ -15,6 +15,9 @@ public final class Topics {
      */
     public static final String TRANSACTIONS_DLT = "transactions.DLT";
 
+    /** Alert v1 messages, keyed by cardId. At-least-once: readers should drop duplicates by alertId. */
+    public static final String ALERTS = "alerts";
+
     private Topics() {
     }
 }

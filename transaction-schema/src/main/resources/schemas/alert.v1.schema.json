@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Alert v1",
+  "description": "A detector flagged a transaction. Published to the `alerts` Kafka topic, keyed by cardId. Mirrors io.budget.watchdog.schema.Alert; AlertContractTest keeps the two in sync. Publishing is at-least-once, so readers should drop duplicates by alertId. Unknown extra fields are allowed.",
+  "type": "object",
+  "required": [
+    "schemaVersion", "alertId", "transactionId", "userId", "cardId", "detector", "issueType", "explanation",
+    "occurredAt", "detectedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "alertId": { "type": "string", "format": "uuid", "description": "The same for the same transactionId and detector, so a republished alert keeps its ID." },
+    "transactionId": { "type": "string", "format": "uuid" },
+    "userId": { "type": "string", "pattern": "\\S" },
+    "cardId": { "type": "string", "pattern": "\\S", "description": "Also the Kafka key." },
+    "detector": { "type": "string", "pattern": "\\S", "description": "What raised it: a rule ID like duplicate-charge, or later a model's name." },
+    "issueType": {
+      "enum": ["DUPLICATE_CHARGE", "TRIAL_CONVERSION", "PRICE_HIKE", "SPENDING_SPIKE", "CARD_TESTING", "NEW_COUNTRY"]
+    },
+    "explanation": { "type": "string", "pattern": "\\S", "description": "Plain English for the cardholder." },
+    "occurredAt": { "type": "string", "format": "date-time", "description": "The transaction's event time." },
+    "detectedAt": { "type": "string", "format": "date-time", "description": "Real time the watchdog raised the alert." }
+  }
+}
