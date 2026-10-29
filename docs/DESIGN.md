@@ -7,7 +7,7 @@ Watchdog watches card transactions as they happen and flags two kinds of problem
 
 It's the next version of Budget.io, my manual budget planner. This doc covers how Watchdog works, why I built it this way, and where it's going.
 
-**Status:** Phases 1 and 2 are built and tested: the transaction pipeline, and six detection rules that check every new transaction. For now the rules log each hit with a plain-English explanation; alerts and metrics come in Phase 3. Everything after Phase 2 is planned and marked that way below.
+**Status:** Phases 1 and 2 are built and tested: the transaction pipeline, and six detection rules that check every new transaction. Phase 3 is in progress. Its first part is built: every hit becomes an alert that's saved and published, a restarted watchdog rebuilds its rule memory before it reads Kafka, and there are health checks and integration tests. Detection metrics and the REST API are still planned. Everything not built yet is marked that way below.
 
 ## Roadmap
 
@@ -15,7 +15,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 |---|---|---|
 | 1 | Transaction pipeline: a simulator, Kafka, and a Spring Boot service that validates transactions and stores them in PostgreSQL | Done |
 | 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
-| 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | Planned |
+| 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | In progress: alerts, the warm-up, and health checks are built |
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | Planned |
 | 4 | Dashboard, with a Selenium end-to-end test | Planned |
 | 5 | CI with GitHub Actions, and benchmark results in the README | Planned |
@@ -86,8 +86,8 @@ flowchart LR
     ING -- invalid --> DLT
     ING --> PG
     ING --> RULES
-    RULES -.-> PG
-    RULES -.-> AL
+    RULES --> PG
+    RULES --> AL
     LB -.-> EVAL
     EVAL -.-> PG
     PG -.-> API
@@ -96,14 +96,14 @@ flowchart LR
     PG -.-> NB
 
     classDef planned stroke-dasharray: 5 5
-    class PLAID,AL,EVAL,API,DASH,NB,BIO planned
+    class PLAID,EVAL,API,DASH,NB,BIO planned
 ```
 
 Solid boxes and arrows exist today. Dashed ones are planned.
 
 1. A source publishes each transaction to the `transactions` topic in Kafka, keyed by card. Right now the only source is the simulator, which also publishes a ground-truth label for every transaction to `transaction-labels`.
 2. The watchdog reads `transactions`, validates each message, and stores it once in PostgreSQL. Messages it can't parse go to `transactions.DLT`.
-3. The detection rules check each new transaction and log every hit with a plain-English explanation. Planned (Phase 3): each hit becomes an alert that's saved to Postgres and published to `alerts`.
+3. The detection rules check each new transaction. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to `alerts`.
 4. Planned: an evaluation step compares the alerts with the labels to measure precision and recall. The rules never see the labels.
 5. Planned: a REST API with live updates feeds the dashboard, and later the Budget.io planner.
 
@@ -240,10 +240,9 @@ The watchdog is a Spring Boot app. For each message on `transactions`:
 1. A `@KafkaListener` receives it. Three consumer threads share the topic's three partitions, so each card's transactions are handled in order by one thread.
 2. It parses the JSON into a `Transaction`. A message that fails goes straight to `transactions.DLT`, with the reason in its headers and a warning in the log, so one bad message can't block a partition.
 3. It stores the transaction with `INSERT ... ON CONFLICT (transaction_id) DO NOTHING`. If the row already exists, Kafka delivered the same message twice and the watchdog skips it. A duplicate message must never look like a duplicate charge.
-4. A new transaction (not a skipped one) goes through the detection rules, described under Phase 2.
-5. Kafka's offset, its bookmark for where the watchdog is in the topic, gets committed after processing.
-
-Saving alerts comes in Phase 3.
+4. A new transaction (not a skipped one) goes through the detection rules, described under Phase 2, and each hit is saved as an alert in the same database transaction (Phase 3).
+5. The alerts are published to `alerts` (Phase 3).
+6. Kafka's offset, its bookmark for where the watchdog is in the topic, gets committed after processing.
 
 **When things go wrong:**
 
@@ -253,11 +252,12 @@ Saving alerts comes in Phase 3.
 
 ### Storage
 
-PostgreSQL 18, with one table so far:
+PostgreSQL 18, with two tables so far:
 
 | Table | Columns |
 |---|---|
 | `transactions` | every message field plus `processed_at` (when the watchdog stored it). Primary key `transaction_id`; indexes on `(card_id, occurred_at)` and `processed_at`. |
+| `alerts` (Phase 3) | every alert message field plus `published_at` (when Kafka confirmed it; empty until then). Primary key `alert_id`, unique on `(transaction_id, detector)`, foreign key to `transactions`; indexes on `occurred_at` and `(user_id, occurred_at)`. |
 
 Flyway applies numbered SQL migrations at startup. A committed migration never changes; schema changes go in a new file. I went with Spring's `JdbcClient` and plain SQL instead of JPA: every query is visible, the planned stats need SQL features like `percentile_cont`, and there's no object graph for an ORM to help with.
 
@@ -271,7 +271,7 @@ Flyway applies numbered SQL migrations at startup. A committed migration never c
 | `kafka-init` | `apache/kafka:4.2.2` | creates the topics, then exits | none |
 | `postgres` | `postgres:18.6-alpine` | storage | 5432 |
 | `simulator` | built from `simulator/Dockerfile` | the transaction source | none |
-| `watchdog` | built from `watchdog-service/Dockerfile` | consumer and storage (the API comes in Phase 3) | none yet |
+| `watchdog` | built from `watchdog-service/Dockerfile` | consumer, rules, alerts, health checks (the API comes later in Phase 3) | 8082 |
 | `kafka-ui` | `kafbat/kafka-ui:v1.5.0`, profile `tools` | browse topics and messages | 8081 |
 
 | Topic | Partitions | Key |
@@ -279,11 +279,12 @@ Flyway applies numbered SQL migrations at startup. A committed migration never c
 | `transactions` | 3 | `cardId` |
 | `transaction-labels` | 3 | `transactionId` |
 | `transactions.DLT` | 3 | the original key. It needs at least as many partitions as `transactions`, because a failed message keeps its partition number. |
-| `alerts` (Phase 3) | 3 | `cardId` |
+| `alerts` | 3 | `cardId` |
 
 A few details:
 
 - **Topics are created explicitly.** Kafka's automatic topic creation is off, so a typo can't silently create a one-partition topic. The `kafka-init` container creates them, and the apps wait for it to finish.
+- **Port 8082 for the watchdog.** Budget.io's own server uses 8080, and Kafka UI has 8081, so all three can run at once.
 - **Two Kafka listeners.** Containers connect to `kafka:9092`. Programs on your machine, like the watchdog run from an IDE, connect to `localhost:9094`.
 - **Local only.** Every port is bound to 127.0.0.1, and the credentials are for local development only.
 - **A throwaway demo.** Kafka and Postgres keep their data in memory (tmpfs), so every `docker compose up` starts a fresh, repeatable run. Without that, a restarted simulator would replay transactions the watchdog already has, and the demo would go quiet until it caught up. Kafka runs as a non-root user, so its tmpfs needs `mode=1777`. Restarting just the Postgres container wipes its data.
@@ -381,9 +382,9 @@ The rules need history: recent charges, running averages, countries seen. The op
 
 Each rule keeps its history in memory, in a map keyed by card. It stays small: time windows are pruned on every transaction, merchants and small charges that can't matter anymore are dropped, and the spending-spike rule keeps three running numbers per category (Welford's algorithm, below). Unit tests feed one card a simulated year of transactions and check that each windowed rule's memory stays bounded.
 
-Each card normally arrives on one consumer thread, but the engine still takes a per-card lock around that card's rules. The lock is almost never contended, because only one thread usually asks for a given card. It's there because Kafka can move a partition to another thread: during testing, two partitions moved at startup, about 3 seconds in. Java only guarantees that the new thread sees the old thread's changes to a card's history if they hand over through a lock. The same lock will cover the Phase 3 warm-up, which replays history on a different thread.
+Each card normally arrives on one consumer thread, but the engine still takes a per-card lock around that card's rules. The lock is almost never contended, because only one thread usually asks for a given card. It's there because Kafka can move a partition to another thread: during testing, two partitions moved at startup, about 3 seconds in. Java only guarantees that the new thread sees the old thread's changes to a card's history if they hand over through a lock. The same lock covers the Phase 3 warm-up, which replays history on a different thread.
 
-The history isn't rebuilt at startup yet. That warm-up, replaying about 90 simulated days from Postgres through the rules with alerts switched off, is planned for Phase 3, so for now a restarted watchdog starts with empty memory (see Known limitations). Scaling out to several watchdogs would mean moving to Kafka Streams.
+Since Phase 3, the history is rebuilt at startup from Postgres (the warm-up, below). Scaling out to several watchdogs would mean rebuilding a card's history whenever its partition moves to another instance (planned for Phase 3.5) or moving to Kafka Streams.
 
 ### Thresholds
 
@@ -479,41 +480,144 @@ Each rule's false positives are mostly the look-alike the simulator plants for i
 - **The cross-check found a bug in the checker.** The first Java-versus-Python comparison said every line differed. Python's CSV writer ends lines with `\r\n`; once fixed, the hits matched exactly.
 - **Long runs use up the simulator's scenarios.** Each user can try each of the 7 trial offers once and visit each of 10 countries, so a 60-year run had only 13 trial conversions and 18 new-country frauds, against hundreds of App Store pairs. Fine for the demo and a one-year benchmark, but worth knowing before reading long-run numbers.
 
+## Phase 3: what's built so far
+
+Phase 3 is being built in three parts. The first is done: alerts, the warm-up, and what Kubernetes will need (Phase 3.5). Metrics and the API are still planned (below).
+
+### Alerts
+
+Every rule hit becomes an alert. Like the other messages, it has a record in `transaction-schema` (`Alert`), a JSON Schema (`alert.v1.schema.json`), and a contract test that checks the two agree:
+
+```json
+{
+  "schemaVersion": 1,
+  "alertId": "7729bf53-4c4e-35dd-9b61-d1428bf6a33e",
+  "transactionId": "c1ff7a9f-99d1-34a8-a5a0-2b0719ce3f42",
+  "userId": "user-0002",
+  "cardId": "card-0002",
+  "detector": "duplicate-charge",
+  "issueType": "DUPLICATE_CHARGE",
+  "explanation": "Whole Foods Market charged $140.84 twice, 24 seconds apart.",
+  "occurredAt": "2026-03-08T18:57:45Z",
+  "detectedAt": "2026-10-29T04:07:24.093435969Z"
+}
+```
+
+- **`detector`** is plain text: a rule's ID today, and a model's name if an ML detector adds alerts later, with no schema change.
+- **`alertId`** is a name-based UUID built from the transaction ID and the detector, so the same alert always gets the same ID, even when it's published again.
+- Alerts are saved in the `alerts` table (one per transaction and detector) and published to the `alerts` topic, keyed by card.
+- The listener still logs every hit (`Rule hit duplicate-charge on card-0002 ...`), so the logs read the same as in Phase 2.
+
+### Saving an alert and publishing it
+
+For each new transaction:
+
+```
+one Postgres transaction:
+    insert the transaction            (already stored? skip the rules, see below)
+    run the rules
+    insert the alerts                 (published_at empty)
+commit
+publish each alert, wait for Kafka to confirm it, fill in published_at
+commit the Kafka offset
+```
+
+**The gap this closes.** In Phase 2 the transaction insert committed on its own, before the rules ran. If saving the alerts had failed after that, Kafka's retry would have found the transaction already stored and skipped the rules, and the alerts would have been lost. Running the rules again wouldn't have been safe either, because their memory had already learned the transaction: duplicate-charge would have matched it against itself.
+
+Now the transaction row and its alerts commit together, so if saving an alert fails, both roll back and the retry sees the transaction as new. The rules still remember the failed attempt, though, so the engine keeps each card's last transaction ID and the hits it produced. If the same transaction comes back, the engine returns those hits without running the rules again. That's safe because a retry is always the card's latest transaction: each card is on one partition, and Spring's error handler retries the failed message before anything after it. After a crash, the warm-up rebuilds memory from Postgres, which doesn't have the rolled-back row, so the redelivered message is evaluated from scratch.
+
+I looked at two other fixes. Rebuilding the card's memory from Postgres before each retry reuses the warm-up, but it's slow and its 90-day memory can give slightly different later hits. Splitting every rule into "check" and "learn" is the most direct, but it touches all six rules and their tests, and several rules change their memory while checking.
+
+**Saving and publishing aren't one step (the outbox problem).** Postgres and Kafka are two systems, so there's no single commit that covers both. A crash or an error between the two writes can leave them disagreeing. The usual fix is the **transactional outbox pattern**: write the outgoing message into an outbox table in the same database transaction as the data, and have a separate relay read the outbox and publish it, marking each row once Kafka confirms. The relay either polls the table or reads the database's change log, with a tool like Debezium.
+
+Watchdog uses a lighter version of the same idea. The `alerts` table is the outbox, with `published_at` as the "sent" mark, and Kafka's redelivery is the relay. If publishing throws, the error handler retries the message; the retry finds the transaction already stored and publishes that transaction's alerts that are still unpublished. If the process dies before publishing, the offset was never committed, so Kafka redelivers the message and the same thing happens.
+
+What it covers and what it doesn't:
+
+- An alert that's saved always gets published eventually.
+- **Duplicates are possible.** If Kafka confirms an alert and the process dies before `published_at` is filled in, the redelivery publishes it again, with the same `alertId`. Anything that reads `alerts` should drop duplicates by `alertId`.
+- A Kafka outage stalls the partition, just like a Postgres outage, because publishing happens on the consumer thread. A real relay would let ingest keep going while Kafka is down.
+- It only works because every alert is written while handling a message Kafka will redeliver. Alerts from anywhere else would need a real relay.
+
+### Warm-up
+
+At startup, before the Kafka listener starts, the watchdog replays recent history from Postgres through the rules and throws the hits away (their alerts were raised the first time):
+
+- The window is 90 simulated days (`watchdog.warm-up.lookback`), counted back from the newest stored `occurred_at`, never from the wall clock, because the demo's simulated time runs years ahead. It covers the longest look-back: price-hike needs two earlier monthly charges.
+- Each card is replayed in the order it was stored, which is the order the live rules saw it.
+- Rows are streamed from Postgres in batches, so a large table isn't loaded into memory at once.
+- The listener is created with `autoStartup = false`, and the warm-up starts it when it's done. That matters for Kubernetes: Kafka hands partitions to any consumer that joins, ready or not, so the app itself has to hold off.
+- Spring Boot only reports the app as ready once startup code like the warm-up has finished, so `/actuator/health/readiness` says `OUT_OF_SERVICE` until then.
+
+The log shows what it did. On the demo, after about 8 simulated months: `Warm-up finished: replayed 818 transactions on 3 cards, from 2026-06-01T21:20:15Z to 2026-08-30T21:20:15Z, in 35 ms`.
+
+It only covers 90 days, so a restarted watchdog isn't exactly the same as one that never stopped. A country the card only used more than 90 days ago is forgotten, so a charge there can fire new-country once. Spending-spike's baseline is rebuilt from 90 days instead of all history.
+
+### Health, shutdown, and configuration
+
+These are what Phase 3.5 needs:
+
+- **Health checks.** Spring Boot Actuator serves `/actuator/health`, plus `/actuator/health/liveness` and `/actuator/health/readiness`. Liveness only says whether the app itself is broken; it doesn't check Kafka or Postgres, because restarting the watchdog wouldn't fix either. Readiness turns `UP` after the warm-up.
+- **Graceful shutdown.** On SIGTERM, the web server stops taking new requests, and the Kafka listener finishes the message in hand, commits its offset, and leaves the consumer group, so its partitions move right away. Each shutdown step gets up to 30 seconds (Phase 3.5 gives a pod 45).
+- **Consumer threads** come from one setting, `watchdog.listener.concurrency` (`WATCHDOG_LISTENER_CONCURRENCY`): 3 in Compose, 1 per pod in Kubernetes.
+- All configuration still comes from environment variables, and logs still go to stdout.
+
+### Testing (Phase 3 so far)
+
+`./mvnw verify` now also runs integration tests (`*IT`, through Maven Failsafe) against a real Kafka and a real Postgres in Docker containers (Testcontainers), the same images as Compose. So `verify` needs Docker running.
+
+- **Unit tests (197):** 40 schema (including the alert contract), 38 simulator, 119 in `watchdog-service`. New: the engine hands back the same hits for a retry and runs the rules normally for the next transaction; the warm-up replays before it starts the listener; the label guard test now also covers the `ingest` and `alerts` packages.
+- **Integration tests (5):**
+  - a duplicated charge gives one alert row and one alert message, keyed by card, marked published;
+  - a resent message never reaches the rules (if it did, duplicate-charge would match it against itself);
+  - when saving an alert fails once, the retry saves exactly one alert, and its explanation says "twice", not "again", so the rule learned the charge once;
+  - when publishing fails once, the retry publishes the saved alert, and every copy on the topic has the same alert ID;
+  - a real restart: the second run raises a price hike and a new-country charge that it could only catch if the warm-up replayed the card's history, and a country used only before the 90-day window is forgotten. With the window shrunk to one minute, the test fails, as it should.
+
+Checks on the running stack (demo preset, 2026-10-29):
+
+| Check | Result |
+|---|---|
+| Every rule raises alerts | all six within 3 minutes 10 seconds of `docker compose up` |
+| Nothing lost | with the simulator paused and lag 0: 104 alerts in Postgres, all marked published, and exactly the same 104 alert IDs on the `alerts` topic, with no duplicates |
+| A stored message that had an alert, sent again | "Skipped … already stored", still one alert, nothing republished |
+| Postgres paused for 30 seconds | lag grew to 136 and was back to 0 within 5 seconds of unpausing; nothing in the DLT, and the alert check above still matched |
+| Java rules vs. the Python prototypes | identical: 104 hits each, on 1,938 transactions |
+| `docker compose restart watchdog` | readiness answered 503 while the app shut down and for about 0.1 s while the warm-up ran (818 transactions on 3 cards in 35 ms), then 200; price-hike fired again 10 simulated days after the restart, against 72 days in Phase 2 without a warm-up |
+| `docker compose stop watchdog` | stopped in 0.6 seconds: partitions revoked, consumers stopped, then the web server; the next start found 0 messages "already stored", so the offsets of everything processed were committed |
+| `WATCHDOG_LISTENER_CONCURRENCY=1` | one consumer owned all three partitions; back to three consumers without it |
+| Same seed, two fresh runs | the same 104 alerts (IDs, detectors, explanations, times) up to the same simulated day |
+
 ## Planned work
 
-### Phase 3: alerts, API, and metrics
+### Phase 3: the rest (metrics and the API)
 
-- **Alerts** get saved to an `alerts` table (unique on transaction and rule, so a redelivered message can't create a second alert) and published to the `alerts` topic. Each alert records which detector raised it as plain text, so a future ML detector could add alerts without a schema change. Saving to Postgres and publishing to Kafka aren't atomic: a crash in between would leave an alert that was saved but never published. The usual fix is the transactional outbox pattern; for now I'll document the gap instead of building it.
-- **Warm-up:** at startup, replay about 90 simulated days from Postgres through the rules with alerts switched off, before the listener starts. The 90 days count back from the newest stored `occurred_at`, never from the clock (the demo's simulated time runs decades ahead), and cover the longest look-back: price-hike needs two earlier monthly charges.
-- **A gap to close:** if saving alerts fails after the transaction was stored, Kafka's retry finds the transaction already stored and skips the rules. Running the rules twice isn't safe either, because duplicate-charge would match the transaction against itself. This needs designing with the alerts table.
-- **The subscriptions list** for the dashboard is computed on request from the `transactions` table, reusing price-hike's "monthly at a steady price" check, so there's no second copy of subscription data to keep in sync.
-- **Labels** get consumed into a `ground_truth_labels` table. There's no foreign key to `transactions`, because the two topics aren't ordered relative to each other.
+The first part of Phase 3 is built (above). Still planned:
+
+- **Labels** get consumed into a `ground_truth_labels` table, by code in an `evaluation` package. There's no foreign key to `transactions`, because the two topics aren't ordered relative to each other. Bad labels go to `transaction-labels.DLT`.
+- **Recurring charges** for the dashboard are computed on request from the `transactions` table, reusing price-hike's "monthly at a steady price" check, so there's no second copy of the data to keep in sync. They include every steady monthly charge except income, like rent, internet, and phone bills, not only the subscriptions category, because that's what the price-hike rule watches: every hike alert then has a matching row. That's why the API calls them recurring charges, not subscriptions.
 - **The API:**
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/transactions?userId=&limit=` | the newest transactions |
-| `GET /api/alerts?userId=&ruleId=&limit=` | the newest alerts, with explanations |
-| `GET /api/subscriptions?userId=` | detected subscriptions: price, previous price, status, next expected charge, yearly cost |
+| `GET /api/alerts?userId=&detector=&limit=` | the newest alerts, with explanations |
+| `GET /api/recurring?userId=` | recurring charges: merchant, category, price, previous price, status, next expected charge, yearly cost |
 | `GET /api/stats` | per rule: precision, recall, true and false positives, and false negatives; plus throughput and latency |
-| `GET /api/spending/summary?userId=&month=YYYY-MM` | income and spending grouped by Budget.io line |
+| `GET /api/spending/summary?userId=&month=YYYY-MM` | income and spending grouped by Budget.io line, with a configurable CORS allow-list so Budget.io can call it from the browser |
 | `GET /api/stream` | live transactions and alerts as Server-Sent Events |
-| `GET /actuator/health` | health checks for Docker, plus `/actuator/health/liveness` and `/actuator/health/readiness` for Kubernetes |
 
-Live updates use Server-Sent Events instead of WebSockets because the data only flows one way, from the server to the browser, and browsers reconnect automatically.
+Bad parameters (a `limit` that isn't a number or is out of range, a month that isn't `YYYY-MM`, a missing required `userId`, an unknown detector) get a 400 with Spring's standard problem JSON. Live updates use Server-Sent Events instead of WebSockets because the data only flows one way, from the server to the browser, and browsers reconnect automatically.
+
+The stream is fed inside the watchdog process, from the transactions and alerts that process just handled, sent on its own thread so a slow browser can't hold up Kafka consumption. The catch: with several watchdog instances (Phase 3.5), each one's stream only shows the cards on its own partitions. The endpoints that read Postgres are the same from every instance.
 
 - **Metrics:**
   - **Precision** for a rule is the share of its alerts that landed on transactions labeled with its issue type.
-  - **Recall** is the share of injected scenarios of that type that got at least one alert. Counting by scenario means a caught card-testing attack counts once, whichever of its transactions the alert fired on.
+  - **Recall** is the share of injected scenarios of that type with at least one alert on one of their transactions labeled with that type. Counting by scenario means a caught card-testing attack counts once, whichever of its transactions the alert fired on. A hit on the untouched original of a duplicated pair (labeled `NONE`) doesn't count.
+  - **Missing labels.** Labels arrive on their own topic, so a transaction can be stored before its label, and real transactions from Plaid will never have one. Only alerts and scenarios whose transaction and label are both stored are scored; the rest are reported as `unlabeledAlerts`. When there's nothing to divide (no labeled alerts, or no scenarios yet), precision or recall is `null`, not 0. My Python prototypes count it differently: an unlabeled alert is a false positive, and an empty ratio is 0. On a paused, caught-up run every transaction has its label, so both give the same numbers, which is how the service gets checked against the prototype.
   - **Throughput** is transactions stored per second over the last minute.
   - **Latency** is `processed_at - published_at`, reported as the median, 95th, and 99th percentile over the last 5 minutes. It assumes the simulator and the watchdog share a clock, which is true on one machine.
-- **Ready for Kubernetes (Phase 3.5 depends on these):**
-  - Spring Actuator health endpoints with separate liveness and readiness. Liveness only says whether the app itself is stuck; it doesn't check Kafka or Postgres, because restarting the watchdog wouldn't fix either.
-  - Readiness stays false until the warm-up finishes, and the Kafka listener doesn't start until then either. Kafka hands out partitions to any consumer that joins, ready or not, so readiness alone can't keep an unready pod from consuming.
-  - Graceful shutdown on SIGTERM: stop consuming, finish the current message, commit offsets, and leave the consumer group, within a set timeout.
-  - All configuration from environment variables (already true; keep it that way).
-  - Logs to stdout (already true; keep it that way).
-- **Tests:** Testcontainers integration tests with real Kafka and Postgres, and REST Assured tests for the API. This is also when I'll turn on Maven Failsafe, so `verify` runs integration tests (`*IT`) too.
+- **Tests:** REST Assured tests for the API, integration tests for the label consumer and the metrics queries, and unit tests for the metrics math.
 
 ### Kubernetes (Phase 3.5, planned)
 
@@ -574,6 +678,7 @@ My plan: measure the gap first, by running the same seed with 1 pod and with 3 a
 - Images are loaded by hand.
 - The memory settings are sized for a 16 GB Mac.
 - Kubernetes readiness doesn't stop Kafka from assigning partitions to an unready pod. The app has to hold off consuming on its own.
+- With several watchdog pods, each pod's live stream (`/api/stream`) only shows the cards on its own partitions. The endpoints that read Postgres are the same from every pod.
 
 **Stretch, decided later:**
 - packaging the manifests with Kustomize (plain YAML, built into kubectl);
@@ -588,6 +693,8 @@ A React, Vite, and TypeScript dashboard, served by nginx. It keeps Budget.io's i
 ### Phase 5: CI and benchmark
 
 GitHub Actions will run the backend build and tests, the dashboard build, and the end-to-end test on every push. A benchmark with about 1,000 simulated users at max speed will measure maximum throughput, latency at a steady load below that maximum, and precision and recall over a full simulated year. Those numbers go in the README, and the same run produces the Phase 6 dataset.
+
+Threshold tuning happens here too, on the benchmark preset rather than the demo, because the demo plants problems far more often than real life and that inflates precision. I'll tune on one seed and report the results on a different seed, so the numbers aren't graded on the same data the thresholds were tuned on.
 
 ### Phase 6: rules vs. ML
 
@@ -636,16 +743,28 @@ Some of these cover parts that aren't built yet.
 | Simulator | plain Java with the Kafka client, seeded, planned day by day | a Spring Boot app | shows the raw producer API, and runs are reproducible |
 | Simulated users | personas in exact proportion; 3 for the demo, about 1,000 for the benchmark | a single user | realistic variety for the benchmark and the dataset |
 | Live updates | Server-Sent Events | WebSockets; polling | one-way push over plain HTTP, with automatic reconnects |
+| Where the live stream's events come from (Phase 3, planned) | inside each watchdog process, sent on its own thread | a second Kafka consumer per instance with its own group | simple, and a slow browser can't stall consumption; with several instances each stream only shows its own partitions |
 | Dashboard styling | hand-written CSS | Bootstrap; Tailwind; component kits | its own look, and every style is something I can explain |
 | Demo state | in memory, fresh on every `up` | named volumes | a repeatable demo with no stale data |
 | End-to-end test | Selenium with headless Chrome | Playwright; Cypress | it's the browser-testing tool I picked for this project's stack |
 | ML comparison | gradient boosting and Isolation Forest vs. the rules, with a time-based split | a random split; judging by accuracy | a random split leaks the future, and accuracy is meaningless when problems are rare |
 | Rule hits before alerts exist | the engine returns them and the listener logs them | keeping them in memory; a temporary table | tests read the returned list, and Phase 3 swaps the log line for saving and publishing |
 | Rebuilding rule state at startup | Phase 3 | Phase 2 | it needs the listener to wait for the replay and a real Postgres to test; until alerts exist, a restart only means a quiet period |
+| Warm-up window | 90 simulated days before the newest stored `occurred_at`, each card in stored order, hits thrown away | all history; the wall clock | covers price-hike's two earlier monthly charges; simulated time runs years ahead of the real clock |
+| Holding the listener until the warm-up is done | the listener doesn't start on its own; the warm-up starts it | relying on readiness | Kafka assigns partitions to any consumer that joins, ready or not |
+| Alert-save gap | the transaction and its alerts in one database transaction, and the engine remembers each card's last result so a retry reuses it | rebuilding the card from Postgres before the retry; splitting each rule into check and learn | the smallest correct change, and the six tested rules stay as they are |
+| Saving and publishing alerts | `published_at` on each alert; a redelivered message republishes its unpublished alerts | publishing after commit and accepting the gap; a full outbox table with a relay | an alert is never lost, with no extra thread; costs: rare duplicates (readers drop them by `alertId`) and a Kafka outage stalls the partition |
+| Alert message | an `Alert` record and JSON Schema in `transaction-schema`, with an ID derived from the transaction and the detector | a record inside the service | same contract treatment as the other messages, so a future scoring service can publish the same shape; a republished alert keeps its ID |
+| Detector name | plain text (`detector`) | an enum of rule IDs | an ML detector's alerts fit the same table |
+| Integration tests | Testcontainers with the same Kafka and Postgres images as Compose, shared by every test in a run | an embedded Kafka; H2 instead of Postgres | tests run against what production runs; each test uses its own cards |
+| API port | 8082 | 8080 | Budget.io's own server uses 8080 and Kafka UI uses 8081 |
+| Recurring charges (Phase 3, planned) | every steady monthly charge except income, called "recurring charges" (`/api/recurring`) | only the subscriptions category | matches what price-hike watches, so every hike alert has a matching row |
+| Metrics with missing labels (Phase 3, planned) | score only labeled alerts, report the rest as `unlabeledAlerts`, `null` when there's nothing to divide | the prototype's counting (unlabeled = false positive, empty = 0) | numbers don't jump while labels catch up, and Plaid alerts aren't miscounted |
+| Threshold tuning | Phase 5, on the benchmark preset, tuned on one seed and reported on another | Phase 3 on demo data | demo rates inflate precision, and reporting on the tuning data would grade the thresholds on what they were fit to |
 | Keeping rules away from the labels | a plain JUnit test that scans the rules' source | ArchUnit | no new dependency for one check |
 | Rule thresholds | one validated `Settings` record per rule, bound from `application.yml` | constants in code; `@Value` fields | tests state their own numbers, bad config stops startup, and environment variables can override |
 | Rule output | yes or no, with an explanation | scores | nothing in Phases 3 to 5 needs scores, and Phase 6 can replay the rules at other thresholds |
-| A rule that throws | the engine logs it at ERROR and runs the other rules | letting Kafka retry | the retry would find the transaction already stored and silently skip every rule |
+| A rule that throws | the engine logs it at ERROR and runs the other rules | letting Kafka retry | in Phase 2 the retry would have found the transaction already stored and silently skipped every rule; since Phase 3 it would hit the same bug again, and the rules before it would learn the transaction twice |
 | Thread safety of rule state | a per-card lock in the engine | no locking, one thread per card | Kafka can move partitions between threads (two moved at startup in testing), and Java only guarantees the new thread sees the old one's changes through a lock; it also covers the Phase 3 warm-up |
 | Spending-spike categories | dining and shopping | every category; four everyday ones | fixed bills like rent can't spike and broke the rule; disclosed that these are also where the simulator plants binges |
 | Spending-spike baseline | every finished day, spikes included | leaving flagged days out; clipping them; log amounts | fewer false alarms and a baseline that adapts, because people stop trusting alerts that fire too often |
@@ -676,10 +795,10 @@ Some of these cover parts that aren't built yet.
 
 - There's one watchdog instance, and the rules' history lives in its memory.
 - When the watchdog runs as several pods (Phase 3.5, planned), a card whose partition moves to another pod arrives there with no history, so some rules stay quiet for that card until it builds up again. Phase 3.5 will measure how many hits that changes and record the numbers here.
-- Until the Phase 3 warm-up, a restarted watchdog starts with empty rule history. Duplicate-charge and card-testing work again within minutes, but new-country waits for 20 transactions, trial-conversion misses signups from before the restart, spending-spike waits for 14 days with spending, and price-hike waits about two months. A trip booked before the restart can cause one false new-country hit. A fresh `docker compose up` isn't affected.
+- The warm-up only replays 90 simulated days, so a restarted watchdog forgets countries the card only used before that (a charge there can fire new-country once), and spending-spike's baseline is rebuilt from 90 days instead of all history.
 - The demo's Kafka is a single node that keeps data in memory. If Kafka itself goes down, the demo loses whatever it was holding. Real setups write to disk and keep copies on several servers.
 - Retrying forever protects valid transactions during an outage, but a bug that throws while storing a valid message would stall its partition until someone fixes it. A bug in a rule can't: the engine catches it.
-- There's no outbox yet, so in Phase 3 an alert could be saved but never published if the process crashes between the two steps.
+- There's no separate outbox relay. Publishing alerts happens on the consumer thread, so a Kafka outage stalls ingest until Kafka is back, and an alert can be published twice (same `alertId`) if the process dies right after Kafka confirms it. Anything reading `alerts` should drop duplicates by `alertId`.
 - The spending-spike z-score assumes daily totals are roughly normal. Real spending is skewed, which causes extra false positives: on the first Phase 2 test run it flagged 12 ordinary days, out of 60 hits. Phase 6 should measure this properly.
 - Trial-conversion on storefront merchants: a merchant that sells many things under one name, like an app store, can hide a real conversion. An unrelated purchase from it in the first 5 days after a trial signup makes the rule forget the signup. Accepted, because the hold fix it comes from is worth more.
 - New-country fires on a real trip if the first charge in the new country comes more than 30 days after the last travel purchase: booking a flight further ahead, or moving on to a second country late in a long trip without buying anything new in the travel category. The simulator books at most 25 days ahead and each trip is one country, so the demo data doesn't show it, but real people often book further out.
