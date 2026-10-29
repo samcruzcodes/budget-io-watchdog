@@ -28,6 +28,10 @@ class PriceHikeRule implements DetectionRule {
             Check.require(minGap.compareTo(maxGap) < 0, "watchdog.rules.price-hike.min-gap must be less than max-gap");
             Check.positive("watchdog.rules.price-hike.tolerance-percent", tolerancePercent);
         }
+
+        MonthlyPattern monthlyPattern() {
+            return new MonthlyPattern(minGap, maxGap, tolerancePercent);
+        }
     }
 
     private record Charge(Instant occurredAt, long amountCents) {}
@@ -36,6 +40,7 @@ class PriceHikeRule implements DetectionRule {
     private record LastTwo(Charge older, Charge newer) {}
 
     private final Settings settings;
+    private final MonthlyPattern monthly;
 
     // For each card, the last two charges at each merchant. The inner map is only touched under the engine's
     // per-card lock.
@@ -43,6 +48,7 @@ class PriceHikeRule implements DetectionRule {
 
     PriceHikeRule(Settings settings) {
         this.settings = settings;
+        this.monthly = settings.monthlyPattern();
     }
 
     @Override
@@ -76,19 +82,10 @@ class PriceHikeRule implements DetectionRule {
 
     /** a and b look like a subscription (monthly, same price), and c is the next monthly charge at a higher price. */
     private boolean isHike(Charge a, Charge b, Charge c) {
-        int tolerance = settings.tolerancePercent();
-        boolean higher = c.amountCents() * 100 > b.amountCents() * (100 + tolerance); // more than the tolerance
-        return isMonthly(a, b) && isMonthly(b, c) && isWithinTolerance(a, b) && higher;
-    }
-
-    private boolean isMonthly(Charge earlier, Charge later) {
-        Duration gap = Duration.between(earlier.occurredAt(), later.occurredAt());
-        return gap.compareTo(settings.minGap()) >= 0 && gap.compareTo(settings.maxGap()) <= 0;
-    }
-
-    /** Integer math, so the 1% edge is exact: |b - a| / a <= 1% becomes |b - a| * 100 <= a * 1. */
-    private boolean isWithinTolerance(Charge a, Charge b) {
-        return Math.abs(b.amountCents() - a.amountCents()) * 100 <= a.amountCents() * settings.tolerancePercent();
+        return monthly.isMonthly(a.occurredAt(), b.occurredAt())
+                && monthly.isMonthly(b.occurredAt(), c.occurredAt())
+                && monthly.isWithinTolerance(a.amountCents(), b.amountCents())
+                && monthly.isHigher(b.amountCents(), c.amountCents());
     }
 
     /** How many merchants the rule is tracking for a card (for the bounded-memory test). */
