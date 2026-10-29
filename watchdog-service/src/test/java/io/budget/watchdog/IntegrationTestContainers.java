@@ -35,7 +35,8 @@ public final class IntegrationTestContainers {
     /** Like kafka-init: 3 partitions each, so the dead-letter topic matches and nothing is created by accident. */
     private static void createTopics() {
         try (Admin admin = Admin.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
-            List<NewTopic> topics = List.of(Topics.TRANSACTIONS, Topics.TRANSACTIONS_DLT, Topics.ALERTS).stream()
+            List<NewTopic> topics = List.of(Topics.TRANSACTIONS, Topics.TRANSACTIONS_DLT, Topics.TRANSACTION_LABELS,
+                            Topics.TRANSACTION_LABELS_DLT, Topics.ALERTS).stream()
                     .map(name -> new NewTopic(name, 3, (short) 1))
                     .toList();
             admin.createTopics(topics).all().get();

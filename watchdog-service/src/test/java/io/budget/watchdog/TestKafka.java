@@ -14,7 +14,6 @@ import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -43,18 +42,23 @@ public final class TestKafka {
 
     /** Publishes to {@code transactions}, keyed by card like the simulator, and waits until Kafka has it. */
     public static void send(Transaction... transactions) {
+        for (Transaction tx : transactions) {
+            sendRaw(Topics.TRANSACTIONS, tx.cardId(), MessageJson.write(tx));
+        }
+    }
+
+    /** Publishes any value, valid or not, and waits until Kafka has it. */
+    public static void sendRaw(String topic, String key, String value) {
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(Map.of(
                 ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, IntegrationTestContainers.KAFKA.getBootstrapServers(),
                 ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
                 ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class))) {
-            for (Transaction tx : transactions) {
-                producer.send(new ProducerRecord<>(Topics.TRANSACTIONS, tx.cardId(), MessageJson.write(tx))).get();
-            }
+            producer.send(new ProducerRecord<>(topic, key, value)).get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         } catch (ExecutionException e) {
-            throw new IllegalStateException("could not send a test transaction", e);
+            throw new IllegalStateException("could not send a test message", e);
         }
     }
 
@@ -63,23 +67,27 @@ public final class TestKafka {
 
     /** Every message on {@code alerts} for one card, read from the beginning of the topic. */
     public static List<PublishedAlert> alertsPublishedFor(String cardId) {
-        List<PublishedAlert> found = new ArrayList<>();
+        return messagesOn(Topics.ALERTS).stream()
+                .map(record -> new PublishedAlert(record.key(), MessageJson.read(record.value(), Alert.class)))
+                .filter(published -> published.alert().cardId().equals(cardId))
+                .toList();
+    }
+
+    /** Every message on a topic so far, read from the beginning without joining a consumer group. */
+    public static List<ConsumerRecord<String, String>> messagesOn(String topic) {
+        List<ConsumerRecord<String, String>> found = new ArrayList<>();
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(Map.of(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, IntegrationTestContainers.KAFKA.getBootstrapServers(),
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class))) {
-            List<TopicPartition> partitions = List.of(new TopicPartition(Topics.ALERTS, 0),
-                    new TopicPartition(Topics.ALERTS, 1), new TopicPartition(Topics.ALERTS, 2));
-            consumer.assign(partitions); // no consumer group: just read everything
+            List<TopicPartition> partitions = List.of(new TopicPartition(topic, 0), new TopicPartition(topic, 1),
+                    new TopicPartition(topic, 2));
+            consumer.assign(partitions);
             consumer.seekToBeginning(partitions);
             Map<TopicPartition, Long> end = consumer.endOffsets(partitions);
             while (partitions.stream().anyMatch(p -> consumer.position(p) < end.get(p))) {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
-                for (ConsumerRecord<String, String> record : records) {
-                    Alert alert = MessageJson.read(record.value(), Alert.class);
-                    if (alert.cardId().equals(cardId)) {
-                        found.add(new PublishedAlert(record.key(), alert));
-                    }
+                for (ConsumerRecord<String, String> record : consumer.poll(Duration.ofMillis(500))) {
+                    found.add(record);
                 }
             }
         }
