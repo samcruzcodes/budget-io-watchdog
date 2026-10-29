@@ -1,6 +1,7 @@
 package io.budget.watchdog.ingest;
 
 import io.budget.watchdog.alerts.AlertPublisher;
+import io.budget.watchdog.api.LiveFeed;
 import io.budget.watchdog.alerts.AlertRepository;
 import io.budget.watchdog.rules.RuleEngine;
 import io.budget.watchdog.rules.RuleHit;
@@ -39,17 +40,20 @@ public class TransactionListener {
     private final AlertPublisher publisher;
     private final RuleEngine ruleEngine;
     private final TransactionTemplate database;
+    private final LiveFeed liveFeed;
     private final Clock clock;
     private final AtomicLong stored = new AtomicLong();
 
     public TransactionListener(TransactionParser parser, TransactionRepository transactions, AlertRepository alerts,
-            AlertPublisher publisher, RuleEngine ruleEngine, TransactionTemplate database, Clock clock) {
+            AlertPublisher publisher, RuleEngine ruleEngine, TransactionTemplate database, LiveFeed liveFeed,
+            Clock clock) {
         this.parser = parser;
         this.transactions = transactions;
         this.alerts = alerts;
         this.publisher = publisher;
         this.ruleEngine = ruleEngine;
         this.database = database;
+        this.liveFeed = liveFeed;
         this.clock = clock;
     }
 
@@ -86,6 +90,9 @@ public class TransactionListener {
         }
 
         if (result.isNew()) {
+            // Browsers watching the live stream; this only queues the events, so it can't slow consumption down.
+            liveFeed.publish("transaction", tx);
+            result.toPublish().forEach(alert -> liveFeed.publish("alert", alert));
             long total = stored.incrementAndGet();
             if (total == 1 || total % 1_000 == 0) {
                 log.info("Stored {} transactions", total);
