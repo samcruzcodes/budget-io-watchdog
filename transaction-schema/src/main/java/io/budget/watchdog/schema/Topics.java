@@ -15,6 +15,9 @@ public final class Topics {
      */
     public static final String TRANSACTIONS_DLT = "transactions.DLT";
 
+    /** Labels the watchdog can never process. Same partition count as {@link #TRANSACTION_LABELS}, for the same reason. */
+    public static final String TRANSACTION_LABELS_DLT = "transaction-labels.DLT";
+
     /** Alert v1 messages, keyed by cardId. At-least-once: readers should drop duplicates by alertId. */
     public static final String ALERTS = "alerts";
 

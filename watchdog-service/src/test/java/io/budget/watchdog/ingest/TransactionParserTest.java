@@ -36,18 +36,18 @@ class TransactionParserTest {
     @Test
     void contractViolationBecomesInvalidTransactionWithTheReason() {
         assertThatThrownBy(() -> parser.parse(VALID.replace("1549", "-1549")))
-                .isInstanceOf(InvalidTransactionException.class)
+                .isInstanceOf(InvalidMessageException.class)
                 .hasMessageContaining("amountCents must not be negative");
     }
 
     @Test
     void textThatIsntJsonBecomesInvalidTransaction() {
-        assertThatThrownBy(() -> parser.parse("hello")).isInstanceOf(InvalidTransactionException.class);
+        assertThatThrownBy(() -> parser.parse("hello")).isInstanceOf(InvalidMessageException.class);
     }
 
     @Test
     void emptyMessageBecomesInvalidTransaction() {
-        assertThatThrownBy(() -> parser.parse("")).isInstanceOf(InvalidTransactionException.class);
-        assertThatThrownBy(() -> parser.parse(null)).isInstanceOf(InvalidTransactionException.class);
+        assertThatThrownBy(() -> parser.parse("")).isInstanceOf(InvalidMessageException.class);
+        assertThatThrownBy(() -> parser.parse(null)).isInstanceOf(InvalidMessageException.class);
     }
 }

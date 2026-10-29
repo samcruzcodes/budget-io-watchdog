@@ -9,16 +9,16 @@ import tools.jackson.core.JacksonException;
 @Component
 public class TransactionParser {
 
-    /** @throws InvalidTransactionException if the message isn't a valid Transaction v1 */
+    /** @throws InvalidMessageException if the message isn't a valid Transaction v1 */
     public Transaction parse(String json) {
         if (json == null || json.isBlank()) {
-            throw new InvalidTransactionException("empty message", null);
+            throw new InvalidMessageException("empty message", null);
         }
         try {
             return MessageJson.read(json, Transaction.class);
         } catch (JacksonException e) {
             // Covers malformed JSON and broken contract rules alike (Transaction's constructor runs during parsing).
-            throw new InvalidTransactionException("not a valid Transaction v1: " + e.getOriginalMessage(), e);
+            throw new InvalidMessageException("not a valid Transaction v1: " + e.getOriginalMessage(), e);
         }
     }
 }

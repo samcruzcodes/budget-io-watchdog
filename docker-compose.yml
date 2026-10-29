@@ -54,8 +54,8 @@ services:
     command:
       - |
         set -e
-        # 3 partitions each. The DLT matches `transactions` because a failed message keeps its partition number.
-        for topic in transactions transaction-labels transactions.DLT alerts; do
+        # 3 partitions each. Each DLT matches its topic because a failed message keeps its partition number.
+        for topic in transactions transaction-labels transactions.DLT transaction-labels.DLT alerts; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
             --topic "$$topic" --partitions 3 --replication-factor 1
         done

@@ -59,7 +59,7 @@ public class TransactionListener {
     @KafkaListener(id = ID, topics = Topics.TRANSACTIONS, groupId = "watchdog",
             concurrency = "${watchdog.listener.concurrency:3}", autoStartup = "false")
     public void onTransaction(ConsumerRecord<String, String> record) {
-        Transaction tx = parser.parse(record.value()); // invalid -> InvalidTransactionException -> dead-letter topic
+        Transaction tx = parser.parse(record.value()); // invalid -> InvalidMessageException -> dead-letter topic
 
         // The transaction row and its alerts commit together. If saving an alert fails, both roll back, and Kafka's
         // retry sees the transaction as new again (the rule engine hands back the same hits).
