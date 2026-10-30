@@ -2,7 +2,7 @@
 
 Watchdog watches card transactions as they happen and flags money leaks (duplicate charges, free trials that turned into paid plans, subscription price hikes, spending spikes) and suspicious charges (card testing, charges from a country the card has never been used in). It's the next version of Budget.io, a manual budget planner I built earlier.
 
-**Status:** Phases 1 to 3 are done. A simulator generates realistic card transactions and publishes them to Kafka, and a Spring Boot service validates them, stores them in PostgreSQL, and runs six detection rules on every new one. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to Kafka. The service measures its own precision and recall against the simulator's answer key, and serves everything through a REST API with a live stream. The dashboard, the benchmark, and the ML comparison are planned. See the [roadmap](#roadmap).
+**Status:** Phases 1 to 3 are done. A simulator generates realistic card transactions and publishes them to Kafka, and a Spring Boot service validates them, stores them in PostgreSQL, and runs six detection rules on every new one. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to Kafka. The service measures its own precision and recall against the simulator's answer key, and serves everything through a REST API with a live stream. The same stack also runs on a local Kubernetes cluster (kind). The dashboard, the benchmark, and the ML comparison are planned. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -32,7 +32,7 @@ The design, the tradeoffs behind each choice, every rule's thresholds and where 
 | 1 | Transaction pipeline: simulator, Kafka, validation, and storage | Done |
 | 2 | Six detection rules: duplicate charges, free trial conversions, price hikes, spending spikes, card testing, new-country charges. They log what they flag. | Done |
 | 3 | Alerts (saved and published), detection metrics (precision and recall), and a REST API | Done |
-| 3.5 | Run the stack on a local Kubernetes cluster (kind) | Planned |
+| 3.5 | Run the stack on a local Kubernetes cluster (kind) | In progress: the cluster and its demos are done; keeping rule memory when a partition moves to another pod is next |
 | 4 | Dashboard | Planned |
 | 5 | CI and benchmark results | Planned |
 | 6 | Compare the rules with an ML model trained on the simulator's labeled data | Planned |
@@ -74,6 +74,22 @@ docker compose down                         # stop everything
     -c "select detector, explanation from alerts order by occurred_at desc limit 10"
   ```
 
+## Running it on Kubernetes (kind)
+
+The same stack on a local, single-node Kubernetes cluster, built with kind. It's a practice cluster on one laptop, not production. You need Docker; the scripts download their own pinned kind and kubectl.
+
+```
+scripts/install-tools.sh        # once: kind v0.33.0 and kubectl v1.37.1 into .tools/bin, checksums checked
+scripts/k8s-up.sh               # cluster, images, Kafka, Postgres, the simulator, the watchdog; waits until all Ready
+scripts/k8s-up.sh --with-ui     # the same, plus Kafka UI
+scripts/k8s-down.sh             # delete the cluster and everything in it
+```
+
+- Use the pinned kubectl, with the cluster's context: `.tools/bin/kubectl --context kind-watchdog -n watchdog get pods`.
+- The API: `.tools/bin/kubectl --context kind-watchdog -n watchdog port-forward svc/watchdog 8082:8082`, then the same `curl` commands as above. Kafka UI: `port-forward svc/kafka-ui 8081:8080`.
+- Things to try: delete the watchdog pod and watch a new one warm up and take over (`kubectl delete pod -l app=watchdog`), scale it (`kubectl scale deployment watchdog --replicas=3`), or roll it (`kubectl rollout restart deployment/watchdog`). Then scale the simulator to 0 and run `scripts/k8s-check-no-loss.sh`, which checks that every transaction and alert ID on the topics is in Postgres, and nothing else is.
+- With several watchdog pods, the rules' memory of a card stays in the pod that had it when the card's partition moves, and each pod's live stream only shows its own partitions. Both are written up in [docs/DESIGN.md](docs/DESIGN.md), with the measured demo results.
+
 ## Development
 
 You need Java 21, plus Docker for the full stack. `./mvnw` downloads the right Maven version on first use and checks its checksum, so there's nothing else to install.
@@ -94,6 +110,8 @@ transaction-schema/   message formats shared by every program: records, JSON Sch
 simulator/            the plain Java transaction generator
 watchdog-service/     the Spring Boot service: Kafka in, PostgreSQL out, detection rules, alerts
 config/               simulator presets
+k8s/                  Kubernetes manifests for the kind cluster
+scripts/              kind setup, up, down, and the no-loss check
 docs/DESIGN.md        design, tradeoffs, and the decision log
 ```
 

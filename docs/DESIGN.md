@@ -7,7 +7,7 @@ Watchdog watches card transactions as they happen and flags two kinds of problem
 
 It's the next version of Budget.io, my manual budget planner. This doc covers how Watchdog works, why I built it this way, and where it's going.
 
-**Status:** Phases 1 to 3 are built and tested: the transaction pipeline; six detection rules that check every new transaction; alerts that are saved and published; a warm-up that rebuilds rule memory after a restart; precision and recall measured against the simulator's labels; a REST API with a live stream; health checks; and integration and API tests against real Kafka and Postgres. Everything after Phase 3 is planned and marked that way below.
+**Status:** Phases 1 to 3 are built and tested: the transaction pipeline; six detection rules that check every new transaction; alerts that are saved and published; a warm-up that rebuilds rule memory after a restart; precision and recall measured against the simulator's labels; a REST API with a live stream; health checks; and integration and API tests against real Kafka and Postgres. The stack also runs on a local Kubernetes cluster (kind), with demos of self-healing, readiness, scaling, and rolling updates (Phase 3.5a). Everything else is planned and marked that way below.
 
 ## Roadmap
 
@@ -16,7 +16,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 | 1 | Transaction pipeline: a simulator, Kafka, and a Spring Boot service that validates transactions and stores them in PostgreSQL | Done |
 | 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
 | 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | Done |
-| 3.5 | Run the stack on a local Kubernetes cluster (kind) | Planned |
+| 3.5 | Run the stack on a local Kubernetes cluster (kind) | In progress: the cluster and its demos (3.5a) are done; rule memory across pods (3.5b) is planned |
 | 4 | Dashboard, with a Selenium end-to-end test | Planned |
 | 5 | CI with GitHub Actions, and benchmark results in the README | Planned |
 | 6 | Data science: compare the rules with an ML model | Planned |
@@ -672,72 +672,94 @@ Checks for the API, on a fresh run (demo preset, 2026-10-29):
 | CORS | a preflight from `http://localhost:5173` got `Access-Control-Allow-Origin`; one from another origin got 403 |
 | `docker compose stop watchdog` with a stream open | 0.76 seconds; the stream closed before the web server's graceful shutdown started, and the next start redelivered nothing |
 
-## Planned work
+## Phase 3.5a: Kubernetes on kind
 
-### Kubernetes (Phase 3.5, planned)
+Kubernetes shows up in a lot of the roles I'm applying to, and I wanted hands-on experience I can actually explain, so the whole stack also runs on a local kind cluster on my Mac. It's a single-node practice cluster, not production. Compose still works the same way; this is a second way to run the same images. Phase 3.5 is split in two: this first part (3.5a) is built and its demos pass; rebuilding rule memory when a partition moves to another pod is 3.5b, still planned (below).
 
-Nothing here is built yet. Kubernetes shows up in a lot of the roles I'm applying to, and I want hands-on experience I can actually explain, so Phase 3.5 runs the whole stack on a local kind cluster on my Mac. It's a single-node practice cluster, not production. It comes after Phase 3 because it needs Phase 3's health endpoints for the probes and its warm-up, so a restarted pod rebuilds its rule memory.
+### What runs where
 
-**The plan:**
-
-- **Cluster:** kind v0.33.0 with the Kubernetes v1.37.0 node image, and kubectl v1.37.1, all pinned in a gitignored `.tools/bin` folder, because the kubectl on my PATH is too old. Images are built with the existing Dockerfiles and copied into the cluster with `kind load docker-image`, so there's no registry. Everything runs in one namespace, `watchdog`. One script brings the stack up and waits until every pod is Ready, and another deletes the cluster.
-- **Kafka:** one KRaft broker as a StatefulSet with a headless Service and throwaway storage (emptyDir), like the Compose demo. The headless Service gives the broker a stable DNS name, and that's what it advertises. The in-cluster version of Compose's two-listeners trap: a client only uses `kafka:9092` for its first connection, then connects to whatever address the broker advertises, so that has to be a name every pod can resolve and that won't change. A pod IP changes on every restart, and `localhost` would point each client at itself. Kafka tools run inside the cluster with `kubectl exec`. A Job creates the topics, replacing `kafka-init`, and the apps wait for them with initContainers, so startup happens in a clear order instead of the simulator crashing and restarting until the topics exist. Teams usually run Kafka on Kubernetes with the Strimzi operator, but it's too heavy for a laptop demo and hides the networking I want to learn.
-- **Postgres:** a StatefulSet with a 1 GiB PersistentVolumeClaim, so deleting the Postgres pod keeps its data (every new cluster still starts empty), and its password in a Secret. A Secret is only base64-encoded, not encrypted: anyone allowed to read it can decode it. Real clusters add encryption at rest or an external secret store; this one doesn't.
-- **Watchdog:** a Deployment, 1 replica by default, configured from a ConfigMap with the same environment variables Compose sets today. It has three probes:
-  - **startup:** gives the JVM time to start.
-  - **liveness:** "restart me if I'm stuck".
-  - **readiness:** "I'm ready to work", which here means the warm-up is done.
-
-  It also gets memory requests and limits, with the JVM heap capped at 75% of the limit, because the heap is only part of a JVM's memory and going over the limit gets the container killed (`OOMKilled`). It gets enough grace period after SIGTERM to finish its current message, and runs as a non-root user with no privilege escalation. In Kubernetes each pod runs one consumer thread, and scaling happens by adding pods.
-- **Simulator:** a Deployment with exactly 1 replica, replaced (not rolled) on updates. It's deterministic, so a second copy would publish every transaction again with the same IDs. The watchdog would skip them, but the run would be wasteful and confusing.
-- **Access:** `kubectl port-forward` for Kafka UI and later the API and dashboard. Kafka UI runs in the cluster only when I ask for it, to save memory; it can't easily run on my Mac, because tools outside the cluster can't reach the address Kafka advertises. No Ingress for now. The dashboard joins in Phase 4.
-
-| Docker Compose | Kubernetes |
+| Docker Compose | Kubernetes (`k8s/`) |
 |---|---|
-| `kafka` service | StatefulSet + headless Service + Service |
-| `kafka-init` | Job |
-| `postgres` service | StatefulSet + Service + 1 GiB PersistentVolumeClaim |
-| `simulator` service | Deployment, 1 replica, replaced on updates |
-| `watchdog` service | Deployment + Service |
-| `kafka-ui` (`tools` profile) | Deployment + Service, opt-in |
-| `environment:` | ConfigMap, and a Secret for the password |
+| `kafka` service | StatefulSet `kafka` + headless Service `kafka-headless` + Service `kafka` |
+| `kafka-init` | Job `kafka-topics` (all five topics, 3 partitions each) |
+| `postgres` service | StatefulSet `postgres` + Service + 1 GiB PersistentVolumeClaim |
+| `simulator` service | Deployment `simulator`, 1 replica, replaced (not rolled) on updates |
+| `watchdog` service | Deployment `watchdog` + Service on port 8082 |
+| `kafka-ui` (`tools` profile) | Deployment + Service, opt-in (`--with-ui`) |
+| `environment:` | ConfigMap, and a Secret for the database password |
 | `env_file: config/simulator.demo.env` | ConfigMap generated from the same file |
 | `healthcheck:` | startup, liveness, and readiness probes |
 | `depends_on:` with conditions | initContainers, readiness, and `kubectl wait` |
 | `restart: on-failure` | the Deployment keeps the desired number of pods running |
 | `tmpfs:` | emptyDir |
 | `ports: 127.0.0.1:...` | `kubectl port-forward` |
-| `docker compose up --build` / `down` | the setup and teardown scripts |
+| `docker compose up --build` / `down` | `scripts/k8s-up.sh` / `scripts/k8s-down.sh` |
 
-**What I want to show:**
-- the stack coming up with every pod Ready, and transactions flowing to rule hits;
-- deleting the watchdog pod, with a new one resuming from the last committed offset and nothing lost or duplicated (the same topic-vs-Postgres count as Phase 1), and how long recovery takes;
-- the new pod staying unready until its warm-up finishes;
-- scaling to 3 pods with one partition each, then 4 pods with one sitting idle, because there are only 3 partitions;
-- a rolling update with no messages lost;
-- a teardown that leaves nothing running.
+- **Tools, pinned.** kind v0.33.0 (node image `kindest/node:v1.37.0`, pinned by digest) and kubectl v1.37.1 live in a gitignored `.tools/bin` folder, downloaded by `scripts/install-tools.sh`, which checks each file's SHA-256 first. The kubectl on my PATH is v1.30, too old for a v1.37 cluster, and Homebrew can't pin versions. Every script names the cluster's kubectl context, so it can't touch another cluster.
+- **Images.** Our two images are built with the Compose Dockerfiles and copied into the cluster with `kind load docker-image`, and their pods never pull (`imagePullPolicy: Never`), so a missing image fails right away. The node pulls Kafka, Postgres, and Kafka UI itself: loading those from Docker Desktop failed with "content digest not found", because only my Mac's platform of those multi-platform images was downloaded.
+- **Kafka's networking.** A client only uses `kafka:9092` for its first connection; the broker then answers with the address it advertises, and every later connection goes there. So the broker advertises its stable DNS name from the headless Service, `kafka-0.kafka-headless.watchdog.svc.cluster.local`. A pod IP changes on every restart, and `localhost` would point each client at itself. Two more details: the headless Service publishes the pod before it's Ready, because Kafka has to resolve its own name while starting, and every pod turns off Kubernetes' Service environment variables, because Kubernetes would inject `KAFKA_PORT` and friends and the Kafka image turns every `KAFKA_*` variable into a broker setting. I ran Kafka by hand instead of with the Strimzi operator, which is what teams usually use: it's heavy for a laptop and hides the networking I wanted to learn.
+- **Startup order.** The topics Job creates the five topics. The simulator and watchdog pods wait in initContainers until all five exist, and the watchdog also waits until Postgres accepts connections, so nothing crash-loops while the rest starts.
+- **Postgres** keeps its data on a 1 GiB PersistentVolumeClaim from kind's built-in storage, so deleting the Postgres pod keeps the data; a new cluster still starts empty. The password is in a Secret that the up script creates, so no Secret file is in Git. A Secret is only base64-encoded, not encrypted.
+- **The watchdog pod:**
+  - a startup probe (up to 2 minutes for the JVM), a liveness probe that only checks the app itself, and a readiness probe that's false until the warm-up has rebuilt the rules' memory. Readiness can't stop Kafka from assigning partitions to an unready pod, which is why the app holds its listener back on its own (Phase 3);
+  - one consumer thread per pod (`WATCHDOG_LISTENER_CONCURRENCY=1`): scaling happens by adding pods;
+  - memory requests and limits (384 MiB and 768 MiB), with the heap at 75% of the limit, because the heap is only part of a JVM's memory and going over the limit gets the container killed (`OOMKilled`). No CPU limit, because throttling slows JVM startup and makes probes fail;
+  - 45 seconds after SIGTERM before Kubernetes kills it, since Spring gives each shutdown step up to 30;
+  - non-root (user 10001, given as a number so Kubernetes can check it), no privilege escalation, no Linux capabilities, a read-only root filesystem with a writable `/tmp`.
+- **The simulator** has exactly one replica and the `Recreate` strategy, so even an update never runs two: it's deterministic, and a second copy would publish every transaction again.
+- **Access** is `kubectl port-forward`: the API on 8082, Kafka UI on 8081 when it's running. Kafka UI runs inside the cluster, because tools on the Mac can't reach the broker's in-cluster name.
 
-**Rule memory across pods.** Phase 2's per-card lock protects a card's history when its partition moves between threads in one process. It does nothing when the partition moves to another pod, because the history stays in the old pod's memory. The new owner starts that card from scratch, and slower rules like price-hike stay quiet for a while. The options:
+### Demos and results
+
+On my Mac (16 GB, Docker Desktop with 7.65 GiB and 8 CPUs), demo preset, 2026-10-30:
+
+| Demo | Result |
+|---|---|
+| 1. Up | `scripts/k8s-up.sh` from no cluster to every pod Ready in 55 seconds (images already built and cached) |
+| 2. End to end | transactions, labels, and alerts flow; the watchdog's log has no errors |
+| 3. Self-healing | `kubectl delete pod`: the replacement was Ready 6.6 s after the delete, and consumer lag was back to 0 at 7.8 s |
+| 4. Readiness | the new pod showed `0/1` through its initContainers and JVM startup, the warm-up replayed 623 transactions in 40 ms, the listener started, and it turned `1/1` on the next readiness probe |
+| 5. Scaling | at 3 pods, one partition each in both consumer groups (`watchdog` and `watchdog-labels`), with committed offsets advancing on each busy pod under new traffic. At 4 pods, each group had one consumer with no partition, and **it was a different pod in each group** |
+| 7. Rolling update | `kubectl rollout restart`: the new pod was Ready 6.5 s in, before the old one started terminating. The old pod revoked its partitions, stopped its consumers, and shut down gracefully within about 1.1 s of SIGTERM |
+| 8. Teardown | `scripts/k8s-down.sh` in 1 second; no clusters, kind containers, volumes, or port-forwards left |
+| Postgres pod deleted | all 1,503 transactions and 72 alerts were still there afterwards; the watchdog stayed Ready, with no restarts |
+| Kafka UI, opt-in | up with `--with-ui`, showing all five topics, and removed cleanly |
+
+**No message lost, checked by ID, not by count.** After demos 3, 5, and 7, with the simulator scaled to 0, `scripts/k8s-check-no-loss.sh` compared the set of transaction IDs on the `transactions` topic with the rows in Postgres, and the alert IDs on the `alerts` topic with the alert rows. Every time: the sets were identical, every alert was marked published, both dead-letter topics were empty, and both consumer groups were at lag 0. The last run covered 1,503 transactions and 72 alerts. The topic also held 1,220 repeated messages from two simulator restarts (it replays from day one), each stored once.
+
+**Delivery isn't detection.** That check proves every message was stored once and every alert published. It doesn't prove the rules raised the same alerts as a run where no pod moved: rule memory lives in each pod, so when a partition changes pods the new owner knows less. During the rolling update I measured how much less. The new pod took its warm-up snapshot at 17:13:48.659 UTC, but the old pod kept processing until it let go of each partition: 11 transactions (2, 4, and 5 on the three demo cards) were stored after the snapshot, so they're missing from the new pod's memory. What that does to the alerts is the 3.5b measurement.
+
+Other things the demos showed:
+
+- **A pod that shut down cleanly still shows `Error`.** The JVM exits with code 143 after SIGTERM, even after Spring's graceful shutdown completes, and Kubernetes shows any non-zero exit as `Error`. The old pod's log shows the clean shutdown.
+- **The demo's three cards only use two partitions.** All three hash to partitions 0 and 2, so `transactions-1` stays empty, and at 3 pods one pod has nothing to do anyway. A real load with many cards spreads evenly.
+- **Memory:** with one watchdog pod the node used 1.6 GiB of 7.65: Kafka 459 MiB (limit 1,280), the watchdog 240 MiB (limit 768), the Kubernetes control plane about 0.5 GiB.
+
+**Limits of this setup:**
+- It's one node on one laptop, so there's no node failure to survive.
+- It's one Kafka broker with no replication, and Kafka's data is thrown away with its pod.
+- The Secret isn't encrypted.
+- There's no Ingress, TLS, or autoscaling.
+- Images are loaded by hand, and rerunning the up script resets every Deployment to its manifest's replica count.
+- The memory settings are sized for a 16 GB Mac.
+- Kubernetes readiness doesn't stop Kafka from assigning partitions to an unready pod. The app holds off consuming on its own.
+- With several watchdog pods, each pod's live stream (`/api/stream`) only shows the cards on its own partitions. The endpoints that read Postgres are the same from every pod.
+- Rule memory doesn't follow a partition to another pod (3.5b, below).
+
+## Planned work
+
+### Phase 3.5b: rule memory across pods
+
+Phase 2's per-card lock protects a card's history when its partition moves between threads in one process. It does nothing when the partition moves to another pod, because the history stays in the old pod's memory. A new pod warms up from Postgres when it starts, but anything the old pod processes after that, or a partition reassigned while both run, isn't in the new owner's memory. The rolling update above left 11 transactions out. The options:
 - rebuild a partition's cards from Postgres whenever a pod is assigned it, with Spring Kafka's rebalance listener and the Phase 3 warm-up code;
 - Kafka Streams state stores, which move the state with the partition and are the standard answer;
 - shared state in Redis.
 
-My plan: measure the gap first, by running the same seed with 1 pod and with 3 and comparing the hits, then build the first option and measure again. Kafka Streams is the standard answer, but it would mean rewriting the consumer, and Redis would add a network round trip per rule.
+My plan: measure the gap first, by running the same seed with 1 pod and with 3 and comparing the alerts (alert IDs are deterministic, so a set difference shows exactly what changed), then build the first option and measure again. Kafka Streams is the standard answer, but it would mean rewriting the consumer, and Redis would add a network round trip per rule.
 
-**Limits of this setup:**
-- It's one node on one laptop, so there's no node failure to survive.
-- It's one Kafka broker with no replication.
-- Kafka's data is thrown away with its pod.
-- The Secret isn't encrypted.
-- There's no Ingress, TLS, or autoscaling.
-- Images are loaded by hand.
-- The memory settings are sized for a 16 GB Mac.
-- Kubernetes readiness doesn't stop Kafka from assigning partitions to an unready pod. The app has to hold off consuming on its own.
-- With several watchdog pods, each pod's live stream (`/api/stream`) only shows the cards on its own partitions. The endpoints that read Postgres are the same from every pod.
+**Also planned for 3.5b:** packaging the manifests with Kustomize (plain YAML, built into kubectl), and a note for Phase 5 on running a kind cluster in GitHub Actions for the end-to-end test.
 
 **Stretch, decided later:**
-- packaging the manifests with Kustomize (plain YAML, built into kubectl);
-- a kind cluster in GitHub Actions for the end-to-end test;
 - an Ingress for the dashboard;
 - autoscaling on consumer lag (KEDA) instead of CPU, explained but not built. A consumer can fall far behind while its CPU stays low, and pods beyond the partition count sit idle.
 
@@ -852,14 +874,18 @@ Some of these cover parts that aren't built yet.
 | Consumer threads per pod | 1 on Kubernetes, 3 in Compose, through one setting | 3 everywhere | scaling happens with pods, and it keeps one partition per pod predictable |
 | Reaching the cluster from my Mac | `kubectl port-forward` | Ingress; NodePort | nothing extra to install; Ingress is stretch |
 | Kafka UI on Kubernetes | in the cluster, opt-in | on my Mac; left out | tools on the Mac can't reach the in-cluster advertised address, and opt-in saves memory |
-| Rule memory across pods | measure the gap, rebuild a partition's cards from Postgres when a pod is assigned it, then measure again | Kafka Streams; Redis | reuses the Phase 3 warm-up; Kafka Streams is the standard answer but a rewrite |
+| Rule memory across pods (3.5b) | measure the gap, rebuild a partition's cards from Postgres when a pod is assigned it, then measure again | Kafka Streams; Redis | reuses the Phase 3 warm-up; Kafka Streams is the standard answer but a rewrite |
+| Third-party images on kind | the node pulls them | `kind load` like our own images | loading them from Docker Desktop failed ("content digest not found"), because only the Mac's platform was downloaded |
+| Kubernetes Service variables | turned off in every pod (`enableServiceLinks: false`) | the default | Kubernetes would inject `KAFKA_PORT`, and the Kafka image reads every `KAFKA_*` variable as a broker setting |
+| Waiting for Postgres on Kubernetes | an initContainer running `pg_isready` | relying on the app's restarts | the same clear startup order as the topics; Compose's `depends_on` does the same |
+| Proving no loss on Kubernetes | a script that compares the actual ID sets on the topics and in Postgres, plus DLTs and lag | comparing counts | equal counts can hide one missing and one extra; a set difference can't |
 | Packaging manifests (stretch) | Kustomize | Helm | plain YAML and built into kubectl; Helm is for charts other people install |
 | Autoscaling (stretch) | not built; consumer lag (KEDA) is the right signal | CPU-based autoscaling | a consumer can fall behind with low CPU, and pods past the partition count sit idle |
 
 ## Known limitations
 
 - There's one watchdog instance, and the rules' history lives in its memory.
-- When the watchdog runs as several pods (Phase 3.5, planned), a card whose partition moves to another pod arrives there with no history, so some rules stay quiet for that card until it builds up again. Phase 3.5 will measure how many hits that changes and record the numbers here.
+- When the watchdog runs as several pods on Kubernetes, rule memory doesn't follow a partition to another pod. A new pod warms up from Postgres when it starts, but what the old pod processes after that isn't in the new owner's memory: 11 transactions during the measured rolling update. Phase 3.5b will measure what that changes in the alerts and rebuild memory when a pod is assigned a partition.
 - The warm-up only replays 90 simulated days, so a restarted watchdog forgets countries the card only used before that (a charge there can fire new-country once), and spending-spike's baseline is rebuilt from 90 days instead of all history.
 - The demo's Kafka is a single node that keeps data in memory. If Kafka itself goes down, the demo loses whatever it was holding. Real setups write to disk and keep copies on several servers.
 - Retrying forever protects valid transactions during an outage, but a bug that throws while storing a valid message would stall its partition until someone fixes it. A bug in a rule can't: the engine catches it.
