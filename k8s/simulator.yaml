@@ -1,0 +1,86 @@
+# The transaction source. Exactly one replica, replaced rather than rolled on updates: it's deterministic, so a second
+# copy would publish every transaction again with the same IDs. Its settings come from the ConfigMap
+# "simulator-config", which scripts/k8s-up.sh builds from config/simulator.demo.env, the same preset Compose uses.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator
+  namespace: watchdog
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # stop the old pod before starting the new one, so two never run at once
+  selector:
+    matchLabels:
+      app: simulator
+  template:
+    metadata:
+      labels:
+        app: simulator
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The Dockerfile creates UID 10001 but sets USER by name; Kubernetes can only check non-root with a number.
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Like Compose's depends_on kafka-init: wait until all five topics exist, so the app doesn't crash-loop.
+        - name: wait-for-topics
+          image: apache/kafka:4.2.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KAFKA_HEAP_OPTS
+              value: -Xmx128m
+            - name: LOG_DIR # Kafka's scripts want a writable log folder; the image's own isn't writable for us
+              value: /tmp
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              until [ "$(/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list 2>/dev/null \
+                  | grep -cxE 'transactions|transaction-labels|transactions\.DLT|transaction-labels\.DLT|alerts')" = 5 ]; do
+                echo "waiting for the topics"; sleep 2
+              done
+          resources:
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: simulator
+          image: simulator:dev
+          imagePullPolicy: Never # loaded with kind load docker-image; fail at once if it's missing
+          envFrom:
+            - configMapRef:
+                name: simulator-config
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: kafka:9092
+            # The heap gets 75% of the memory limit; metaspace, threads, and buffers need the rest.
+            - name: JAVA_TOOL_OPTIONS
+              value: -XX:MaxRAMPercentage=75
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp # the JVM's temporary files
+      volumes:
+        - name: tmp
+          emptyDir: {}

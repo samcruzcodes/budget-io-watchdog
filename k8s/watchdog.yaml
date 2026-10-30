@@ -1,0 +1,148 @@
+# The watchdog: consumer, rules, alerts, metrics, and the REST API on port 8082.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: watchdog-config
+  namespace: watchdog
+data:
+  # The same settings docker-compose.yml passes; Spring Boot maps them onto application.yml.
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/watchdog
+  SPRING_DATASOURCE_USERNAME: watchdog
+  # One consumer thread per pod: scaling happens by adding pods. One consumer can still own all three partitions.
+  WATCHDOG_LISTENER_CONCURRENCY: "1"
+  # The heap gets 75% of the memory limit; metaspace, threads, and buffers need the rest.
+  JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: watchdog
+  namespace: watchdog
+spec:
+  selector:
+    app: watchdog
+  ports:
+    - name: http
+      port: 8082
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watchdog
+  namespace: watchdog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: watchdog
+  template:
+    metadata:
+      labels:
+        app: watchdog
+    spec:
+      enableServiceLinks: false
+      # After SIGTERM: Spring gives each shutdown step up to 30 s (finish the message in hand, commit, leave the
+      # consumer group), so 45 s leaves room before Kubernetes kills the process.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001 # the Dockerfile's user, as a number so Kubernetes can check it isn't root
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Like Compose's depends_on: the topics exist, and Postgres accepts connections, before the app starts.
+        - name: wait-for-topics
+          image: apache/kafka:4.2.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KAFKA_HEAP_OPTS
+              value: -Xmx128m
+            - name: LOG_DIR # Kafka's scripts want a writable log folder; the image's own isn't writable for us
+              value: /tmp
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              until [ "$(/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list 2>/dev/null \
+                  | grep -cxE 'transactions|transaction-labels|transactions\.DLT|transaction-labels\.DLT|alerts')" = 5 ]; do
+                echo "waiting for the topics"; sleep 2
+              done
+          resources:
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+        - name: wait-for-postgres
+          image: postgres:18.6-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -U watchdog -d watchdog; do sleep 2; done"]
+          resources:
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: watchdog
+          image: watchdog:dev
+          imagePullPolicy: Never # loaded with kind load docker-image; fail at once if it's missing
+          ports:
+            - name: http
+              containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: watchdog-config
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+          # Gives the JVM up to 2 minutes to start before the other probes count.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 2
+            failureThreshold: 60
+          # "Restart me if I'm stuck." Only the app's own state: restarting wouldn't fix Kafka or Postgres being down,
+          # and every pod would restart at once.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+          # "I'm ready to work": false until the warm-up has rebuilt the rules' memory. It decides whether the Service
+          # sends API requests here and when a rolling update may stop the old pod. It doesn't stop Kafka from
+          # assigning partitions; the app holds its listener back until the warm-up is done.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: 384Mi
+              cpu: 250m
+            limits:
+              memory: 768Mi # no CPU limit: it would throttle the JVM at startup and make probes fail
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp # the JVM's and Tomcat's temporary files
+      volumes:
+        - name: tmp
+          emptyDir: {}

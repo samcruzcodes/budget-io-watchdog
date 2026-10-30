@@ -1,0 +1,49 @@
+# Optional: browse topics and messages (scripts/k8s-up.sh --with-ui). It runs inside the cluster because tools on the
+# Mac can't reach the broker's advertised in-cluster name. Reach it with:
+#   .tools/bin/kubectl --context kind-watchdog -n watchdog port-forward svc/kafka-ui 8081:8080
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  namespace: watchdog
+spec:
+  selector:
+    app: kafka-ui
+  ports:
+    - port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: watchdog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: kafka-ui
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: kafka-ui
+          image: kafbat/kafka-ui:v1.5.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KAFKA_CLUSTERS_0_NAME
+              value: watchdog
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+              value: kafka:9092
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              memory: 384Mi
+              cpu: 100m
+            limits:
+              memory: 640Mi
+          securityContext:
+            allowPrivilegeEscalation: false

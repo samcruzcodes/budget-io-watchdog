@@ -1,0 +1,5 @@
+# Everything for Watchdog lives in one namespace, so it's easy to look at and to delete.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: watchdog

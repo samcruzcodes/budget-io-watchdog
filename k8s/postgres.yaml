@@ -1,0 +1,72 @@
+# Postgres with a 1 GiB PersistentVolumeClaim, so deleting the pod keeps the data (unlike Compose, where restarting
+# Postgres alone wiped it). Every new cluster still starts empty. The password comes from the Secret
+# "postgres-credentials", which scripts/k8s-up.sh creates with the dev-only value, so no Secret file is in Git.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: watchdog
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: watchdog
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      enableServiceLinks: false
+      # The postgres image starts as root to set up its data folder, then switches to its own user, so it keeps the
+      # image's default security settings. The strict settings are on our two apps.
+      containers:
+        - name: postgres
+          image: postgres:18.6-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_DB
+              value: watchdog
+            - name: POSTGRES_USER
+              value: watchdog
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            # Over TCP, like Compose: during first-time setup Postgres runs a temporary server on a local socket only.
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "watchdog", "-d", "watchdog"]
+            periodSeconds: 3
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql # the Postgres 18 image keeps its data under here
+  volumeClaimTemplates:
+    # One claim per pod, kept when the pod is deleted. kind's built-in local-path storage provides it.
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
