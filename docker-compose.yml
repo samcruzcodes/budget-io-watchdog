@@ -1,5 +1,6 @@
 # Budget.io Watchdog: the whole stack.
-#   docker compose up --build                   Kafka, Postgres, the simulator, and the watchdog
+#   docker compose up --build                   Kafka, Postgres, the simulator, the watchdog, and the dashboard
+#                                               (http://localhost:8083)
 #   docker compose --profile tools up --build   also Kafka UI at http://localhost:8081
 # Kafka and Postgres keep their data in memory (tmpfs), so every `up` starts a fresh, deterministic run.
 # Credentials are for local development only, and every port is bound to 127.0.0.1 (this machine only).
@@ -111,6 +112,17 @@ services:
       postgres:
         condition: service_healthy
     restart: on-failure
+
+  # The dashboard: built React files served by nginx, which passes /api through to the watchdog.
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    ports:
+      # Not 8080 to 8082: those are Budget.io's server, Kafka UI, and the watchdog.
+      - "127.0.0.1:8083:80"
+    depends_on:
+      - watchdog
 
   # Optional: browse topics and messages in a web UI.
   kafka-ui:
