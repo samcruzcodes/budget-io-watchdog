@@ -7,7 +7,7 @@ Watchdog watches card transactions as they happen and flags two kinds of problem
 
 It's the next version of Budget.io, my manual budget planner. This doc covers how Watchdog works, why I built it this way, and where it's going.
 
-**Status:** Phases 1 to 3 are built and tested: the transaction pipeline; six detection rules that check every new transaction; alerts that are saved and published; a warm-up that rebuilds rule memory after a restart; precision and recall measured against the simulator's labels; a REST API with a live stream; health checks; and integration and API tests against real Kafka and Postgres. The stack also runs on a local Kubernetes cluster (kind), with demos of self-healing, readiness, scaling, and rolling updates (Phase 3.5a). A web dashboard is partly built (Phase 4): the overview and the live feed. Everything else is planned and marked that way below.
+**Status:** Phases 1 to 3 are built and tested: the transaction pipeline; six detection rules that check every new transaction; alerts that are saved and published; a warm-up that rebuilds rule memory after a restart; precision and recall measured against the simulator's labels; a REST API with a live stream; health checks; and integration and API tests against real Kafka and Postgres. The stack also runs on a local Kubernetes cluster (kind), with demos of self-healing, readiness, scaling, and rolling updates (Phase 3.5a). A web dashboard shows the overview, a live feed, alerts, analytics, and recurring charges (Phase 4, with simulation controls and browser tests still to come). Everything else is planned and marked that way below.
 
 ## Roadmap
 
@@ -17,7 +17,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 | 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
 | 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | Done |
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | In progress: the cluster and its demos (3.5a) are done; rule memory across pods (3.5b) is planned |
-| 4 | Dashboard, with a Selenium end-to-end test | In progress: the overview and live feed are built |
+| 4 | Dashboard, with a Selenium end-to-end test | In progress: all five views are built; simulation controls and the Selenium test are next |
 | 5 | CI with GitHub Actions, and benchmark results in the README | Planned |
 | 6 | Data science: compare the rules with an ML model | Planned |
 
@@ -105,7 +105,7 @@ Solid boxes and arrows exist today. Dashed ones are planned.
 2. The watchdog reads `transactions`, validates each message, and stores it once in PostgreSQL. Messages it can't parse go to `transactions.DLT`.
 3. The detection rules check each new transaction. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to `alerts`.
 4. An evaluation step stores the labels and compares them with the alerts to measure precision and recall (`GET /api/stats`). The rules never see the labels.
-5. A REST API with live updates serves what's stored to the dashboard (Phase 4, partly built). Planned: the Budget.io planner reads it too.
+5. A REST API with live updates serves what's stored to the dashboard (Phase 4). Planned: the Budget.io planner reads it too.
 
 **Why Kafka sits in the middle.** The simulator never talks to the watchdog or the database directly. Kafka holds every message until the watchdog reads it, so the watchdog can go down, come back, and pick up where it left off. Stopping the watchdog for 20 seconds while the simulator kept running shows this: 130 transactions piled up in Kafka, and within seconds of the restart they were all stored, none lost. It also means other programs can read the same stream later without the simulator knowing about them. The tradeoff is that Kafka is one more system to run and understand.
 
@@ -750,13 +750,13 @@ Other things the demos showed:
 
 ## Phase 4: the dashboard (in progress)
 
-A web dashboard for demoing the system, built in three parts. The first part (4a) is done: the API additions it needed, the app's frame, the Overview and Live feed views, and serving it from Compose. Alerts, Analytics, Recurring, and the browser tests are still planned (below).
+A web dashboard for demoing the system. Its first two parts are done: the API additions it needed, the app's frame, and all five views (Overview, Live feed, Alerts, Analytics, Recurring), served from Compose. Simulation controls and the browser tests are still planned (below).
 
 ### What it's built with
 
 - **React 19, Vite 8, and TypeScript 7**, with npm, in `dashboard/`. Every version is pinned exactly, picked with `npm install --before=<two weeks ago>` so nothing is days old. Node 24 LTS (supported until April 2028) is pinned in `dashboard/.nvmrc` for this repo only; Node 20 reached end of life in April 2026.
 - **Hand-written CSS** with Budget.io's identity: Poppins headings, `#4CAF50` as the accent for fills and borders, `#2E7D32` for green text (`#4CAF50` on white fails WCAG AA), and the `#F4F4F9` background. Every text color passes AA against its background. No UI kit, no CSS framework.
-- **No router library.** Views are switched by the URL hash (`#overview`, `#feed`), so a refresh or a shared link opens the same view.
+- **No router library.** Views are switched by the URL hash (`#overview`, `#feed`, `#alerts`, `#analytics`, `#recurring`), so a refresh or a shared link opens the same view.
 - **Typed by hand.** `api.ts` has one function per endpoint and TypeScript types written from the Java records. API errors show the server's own explanation (the problem JSON's `detail`).
 
 ### Live updates
@@ -770,11 +770,26 @@ The whole app shares one `EventSource` connection to `/api/stream`:
 
 The merging, the connection states, and the formatting are plain TypeScript, tested with Vitest (16 tests) without rendering anything.
 
-### The views so far
+### The views
 
 - **Overview:** transactions processed, alerts raised, throughput (real time, last 60 seconds), latency p50, p95, and p99 (real time, last 5 minutes), and per-rule precision and recall, labeled as demo rates. "n/a" means there's nothing to divide yet.
 - **Live feed:** the newest transactions as they arrive (simulated time, card, merchant, category, amount), with a badge naming the rule on any transaction that raised an alert.
+- **Alerts:** recent alerts with the rule that raised them and the rule's own explanation, filtered by rule. The rule list comes from `/api/stats`, so nothing in the dashboard names the rules. New alerts arrive from the live stream and merge into the list. No severity or confidence: the rules don't produce them.
+- **Analytics:** activity per simulated day (transactions, spending, alerts) over 30, 90, or 365 days, with a table view; one user's month of spending by Budget.io line; precision and recall per rule with the true positives, false positives, and missed incidents behind them; and pipeline speed (real time).
+- **Recurring:** a user's recurring charges with their status in words (Steady, Price up, Varies, Overdue), the last two amounts where the price changed ("$17.99 → $19.99"), the next expected charge, the yearly cost, and a total; next to it, the trial-conversion alerts for that user.
 - **Time is labeled everywhere.** Transaction times are simulated (shown in UTC, like the simulated people), and the header shows the current simulated date. Throughput and latency are real time.
+- **Every view has loading, empty, and error states.** An error says what failed (the API's own explanation, or "the watchdog answered 502" while it's restarting) and offers a retry; data that loaded before stays on screen with a note when a refresh fails.
+- **Phones:** on narrow screens the feed and alert tables turn into one card per row, with each value labeled; wide tables scroll inside their panel instead of widening the page.
+
+### Charts
+
+Hand-written SVG, no chart library: three kinds of chart, each small enough to read in one sitting.
+
+- **Activity is three charts stacked on one time axis** (small multiples): transactions, spending, and alerts per day. Never one chart with two y-axes, because the three measures have nothing in common in scale.
+- **Every chart is one series in one color,** so there's no legend: the title says what's plotted. Bars use `#43A047`, which has 3:1 contrast against white; Budget.io's `#4CAF50` has 2.7:1, under the line for non-text marks. Text never takes the data color.
+- **Columns are at most 24 px wide, with a 4 px rounded top and a square base,** a hairline grid, and axes that end on round numbers. Charts of counts keep their ticks on whole numbers.
+- **Charts draw at their real width** (measured with a `ResizeObserver`), so axis text is the same size on a phone and a wide screen instead of a fixed drawing scaled up or down.
+- **Every column has a hover tooltip** with the exact value, and the activity charts have a "Show as a table" view for anyone who'd rather read numbers.
 
 ### Serving it
 
@@ -809,7 +824,10 @@ My plan: measure the gap first, by running the same seed with 1 pod and with 3 a
 
 ### Phase 4: the rest of the dashboard
 
-The first part is built (above). Still planned: the Alerts view (filtered by rule, with each rule's explanation), the Analytics view (activity per simulated day, spending by Budget.io line, per-rule precision and recall, throughput and latency, with hand-written SVG charts), the Recurring view (with steady, varies, price up, and overdue, and the last two amounts on rows that vary), and a Selenium test running headless Chrome against the Compose stack.
+The views are built (above). Still planned:
+
+- **Simulation controls** from the dashboard: start, pause, resume, and change speed without restarting the simulator (and without any container touching the Docker socket); pause automatically after a set number of simulated days; Kafka retention limits; a focus mode that filters every view to one user; and triggering a scenario on demand for a live demo, labeled as manual so the headline metrics only count the seeded run. The design and its decisions are settled; it's built next.
+- **A Selenium test** running headless Chrome against the Compose stack, covering every view, the filters, the live updates, the disconnected state, phone and desktop widths, and the controls.
 
 ### Phase 5: CI and benchmark
 
@@ -886,6 +904,8 @@ Some of these cover parts that aren't built yet.
 | Back-to-back hikes in the recurring list | keep the rule's definition (a steady price before the hike), so the list and the alerts agree | `PRICE_UP` from the monthly gaps alone | I tried loosening the check so back-to-back hikes stay listed, but on the demo data it flagged five utility bills as price hikes, so I reverted it. Since Phase 4 they're listed as `VARIES` instead. |
 | Monthly charges whose price moves (Phase 4) | listed as `VARIES`, with the previous and current amounts | left off the list | utilities and a subscription that keeps going up stay visible, while `PRICE_UP` keeps the rule's definition |
 | Recurring charges | every monthly charge except income, called "recurring charges" (`/api/recurring`) | only the subscriptions category | matches what price-hike watches, so every hike alert has a matching row |
+| Dashboard charts | hand-written SVG, one series per chart, drawn at the container's real width | Recharts or another library; one chart with two y-axes | three simple chart kinds don't need a library, every line is explainable, and separate charts avoid a misleading second axis |
+| Long tables on phones | one card per row, each value labeled | horizontal scrolling | the explanation column is the point of the alerts view, and it was unreadable in a 375 px strip |
 | Dashboard stack (Phase 4) | React, Vite, and TypeScript with npm, hand-written CSS, no router or UI kit | a component kit; a router library | every line is explainable, and Budget.io's look stays its own |
 | Node for the dashboard | Node 24 LTS, pinned in `dashboard/.nvmrc` | Node 20 (end of life April 2026); Node 26 (LTS for two days) | supported until April 2028, and the current Vitest needs 22 or newer; other projects keep their own Node |
 | Serving the dashboard | nginx in Compose, proxying `/api` to the watchdog | the browser calling the API on another port with CORS | one origin, no CORS, and the stream passes through unbuffered |
@@ -941,6 +961,7 @@ Some of these cover parts that aren't built yet.
 - The spending-spike z-score assumes daily totals are roughly normal. Real spending is skewed, which causes extra false positives: on the first Phase 2 test run it flagged 12 ordinary days, out of 60 hits. Phase 6 should measure this properly.
 - Trial-conversion on storefront merchants: a merchant that sells many things under one name, like an app store, can hide a real conversion. An unrelated purchase from it in the first 5 days after a trial signup makes the rule forget the signup. Accepted, because the hold fix it comes from is worth more.
 - New-country fires on a real trip if the first charge in the new country comes more than 30 days after the last travel purchase: booking a flight further ahead, or moving on to a second country late in a long trip without buying anything new in the travel category. The simulator books at most 25 days ahead and each trip is one country, so the demo data doesn't show it, but real people often book further out.
+- The recurring list can show a planned big purchase as a recurring charge: the simulator's big purchases come in a few fixed prices, so two at the same price about a month apart look monthly (on one demo run, "REI, $749.00, Steady"). Real purchases rarely repeat to the cent, but it's the list's definition, not a bug.
 - After two hikes in a row, a subscription is listed as `VARIES`, not `PRICE_UP`, and price-hike doesn't alert on the second hike: it only fires after a steady stretch. The list shows both amounts, so the increase is visible, but there's no alert for it.
 - The API has no authentication. It's bound to 127.0.0.1 in Compose, and any user's data can be read by ID. A real deployment would need users to sign in.
 - The rules assume each card's transactions arrive in time order, and they use UTC days. Real bank data arrives late and out of order, and days depend on the cardholder's time zone.

@@ -2,7 +2,7 @@
 
 Watchdog watches card transactions as they happen and flags money leaks (duplicate charges, free trials that turned into paid plans, subscription price hikes, spending spikes) and suspicious charges (card testing, charges from a country the card has never been used in). It's the next version of Budget.io, a manual budget planner I built earlier.
 
-**Status:** Phases 1 to 3 are done. A simulator generates realistic card transactions and publishes them to Kafka, and a Spring Boot service validates them, stores them in PostgreSQL, and runs six detection rules on every new one. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to Kafka. The service measures its own precision and recall against the simulator's answer key, and serves everything through a REST API with a live stream. The same stack also runs on a local Kubernetes cluster (kind). A web dashboard shows the overview and a live feed; the rest of the dashboard, the benchmark, and the ML comparison are planned. See the [roadmap](#roadmap).
+**Status:** Phases 1 to 3 are done. A simulator generates realistic card transactions and publishes them to Kafka, and a Spring Boot service validates them, stores them in PostgreSQL, and runs six detection rules on every new one. Each hit becomes an alert with a plain-English explanation, saved to Postgres and published to Kafka. The service measures its own precision and recall against the simulator's answer key, and serves everything through a REST API with a live stream. The same stack also runs on a local Kubernetes cluster (kind). A web dashboard shows it all: a live feed, alerts with their explanations, analytics, and recurring charges. Controlling the simulator from the dashboard, the benchmark, and the ML comparison are planned. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -33,7 +33,7 @@ The design, the tradeoffs behind each choice, every rule's thresholds and where 
 | 2 | Six detection rules: duplicate charges, free trial conversions, price hikes, spending spikes, card testing, new-country charges. They log what they flag. | Done |
 | 3 | Alerts (saved and published), detection metrics (precision and recall), and a REST API | Done |
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | In progress: the cluster and its demos are done; keeping rule memory when a partition moves to another pod is next |
-| 4 | Dashboard | In progress: the overview and live feed are done |
+| 4 | Dashboard | In progress: the five views are done; simulation controls and browser tests are next |
 | 5 | CI and benchmark results | Planned |
 | 6 | Compare the rules with an ML model trained on the simulator's labeled data | Planned |
 
@@ -49,7 +49,14 @@ docker compose --profile tools up --build   # the same, plus Kafka UI at http://
 docker compose down                         # stop everything
 ```
 
-- The dashboard is at http://localhost:8083: the overview and a live feed of transactions as they're checked, with a badge on any that raised an alert. Transaction times are simulated; throughput and latency are real time.
+- The dashboard is at http://localhost:8083:
+  - **Overview:** totals, throughput, latency, and each rule's precision and recall (demo rates).
+  - **Live feed:** transactions as they're checked, with a badge on any that raised an alert.
+  - **Alerts:** what the rules flagged and why, filterable by rule.
+  - **Analytics:** activity per simulated day, a month of spending by Budget.io line, detection quality in detail, and pipeline speed.
+  - **Recurring:** each user's subscriptions and bills, marked steady, price up, varies, or overdue, and their free trials that turned into paid plans.
+
+  Transaction times are simulated; throughput and latency are real time. Alerts start about a minute in.
 - Every `up` starts a fresh, repeatable run. Kafka and Postgres keep their data in memory, so `down` throws it away.
 - The demo simulates 3 people at one simulated month per real minute. Planted problems start after a 30-day warm-up, about one real minute in.
 - In Kafka UI, Topics → `transactions` → Messages shows the live feed, `alerts` shows what the rules flagged, and `transactions.DLT` holds anything the watchdog rejected.
