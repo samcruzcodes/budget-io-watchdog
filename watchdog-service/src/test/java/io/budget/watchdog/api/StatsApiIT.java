@@ -8,8 +8,10 @@ import static org.hamcrest.Matchers.is;
 
 import io.budget.watchdog.IntegrationTestContainers;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -26,6 +28,22 @@ class StatsApiIT {
 
     @LocalServerPort
     int port;
+
+    @Autowired
+    JdbcClient jdbc;
+
+    @Test
+    void totalsCountEverythingStored() {
+        long transactions = jdbc.sql("SELECT count(*) FROM transactions").query(Long.class).single();
+        long alerts = jdbc.sql("SELECT count(*) FROM alerts").query(Long.class).single();
+
+        given().port(port)
+                .when().get("/api/stats")
+                .then()
+                .statusCode(200)
+                .body("totals.transactions", is((int) transactions))
+                .body("totals.alerts", is((int) alerts));
+    }
 
     @Test
     void returnsAScorePerRuleWithThroughputAndLatency() {

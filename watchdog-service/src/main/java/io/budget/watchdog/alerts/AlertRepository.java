@@ -5,10 +5,14 @@ import io.budget.watchdog.schema.IssueType;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -78,6 +82,26 @@ public class AlertRepository {
                 .param("limit", limit)
                 .query(AlertRepository::toAlert)
                 .list();
+    }
+
+    public long count() {
+        return jdbc.sql("SELECT count(*) FROM alerts").query(Long.class).single();
+    }
+
+    /** Alerts per UTC day of their transaction's event time, in [start, end); days with none are left out. */
+    public Map<LocalDate, Long> dailyCounts(Instant start, Instant end) {
+        Map<LocalDate, Long> counts = new TreeMap<>();
+        jdbc.sql("""
+                        SELECT (occurred_at AT TIME ZONE 'UTC')::date AS day, count(*) AS alerts
+                        FROM alerts
+                        WHERE occurred_at >= :start AND occurred_at < :end
+                        GROUP BY 1
+                        """)
+                .param("start", utc(start))
+                .param("end", utc(end))
+                .query((RowCallbackHandler) row -> counts.put(row.getObject("day", LocalDate.class),
+                        row.getLong("alerts")));
+        return counts;
     }
 
     private static Alert toAlert(ResultSet row, int rowNumber) throws SQLException {

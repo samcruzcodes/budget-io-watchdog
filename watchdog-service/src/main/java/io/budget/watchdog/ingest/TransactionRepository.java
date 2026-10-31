@@ -5,6 +5,7 @@ import io.budget.watchdog.schema.Transaction;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.EnumMap;
@@ -134,6 +135,48 @@ public class TransactionRepository {
                 .query((RowCallbackHandler) row -> totals.put(Category.valueOf(row.getString("category")),
                         row.getLong("cents")));
         return totals;
+    }
+
+    public long count() {
+        return jdbc.sql("SELECT count(*) FROM transactions").query(Long.class).single();
+    }
+
+    /** One user: their cards, how many transactions they have, and the event time of the newest. */
+    public record UserSummary(String userId, List<String> cardIds, long transactions, Instant newestOccurredAt) {}
+
+    /** Every user with at least one stored transaction, by user ID. */
+    public List<UserSummary> users() {
+        return jdbc.sql("""
+                        SELECT user_id, array_agg(DISTINCT card_id ORDER BY card_id) AS card_ids,
+                               count(*) AS transactions, max(occurred_at) AS newest
+                        FROM transactions
+                        GROUP BY user_id
+                        ORDER BY user_id
+                        """)
+                .query((row, n) -> new UserSummary(row.getString("user_id"),
+                        List.of((String[]) row.getArray("card_ids").getArray()), row.getLong("transactions"),
+                        row.getObject("newest", OffsetDateTime.class).toInstant()))
+                .list();
+    }
+
+    /** Transactions and spending (everything except income) on one UTC day. */
+    public record DayTotals(LocalDate day, long transactions, long spendingCents) {}
+
+    /** Per UTC day of event time, for transactions that occurred in [start, end); days with none are left out. */
+    public List<DayTotals> dailyTotals(Instant start, Instant end) {
+        return jdbc.sql("""
+                        SELECT (occurred_at AT TIME ZONE 'UTC')::date AS day, count(*) AS transactions,
+                               coalesce(sum(amount_cents) FILTER (WHERE category <> 'INCOME'), 0) AS spending
+                        FROM transactions
+                        WHERE occurred_at >= :start AND occurred_at < :end
+                        GROUP BY 1
+                        ORDER BY 1
+                        """)
+                .param("start", utc(start))
+                .param("end", utc(end))
+                .query((row, n) -> new DayTotals(row.getObject("day", LocalDate.class), row.getLong("transactions"),
+                        row.getLong("spending")))
+                .list();
     }
 
     private static Transaction toTransaction(ResultSet row) throws SQLException {
