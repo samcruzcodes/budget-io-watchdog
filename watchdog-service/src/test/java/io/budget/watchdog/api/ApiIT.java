@@ -60,7 +60,7 @@ class ApiIT {
         stored("Spotify", "SUBSCRIPTIONS", 1_199, "2031-01-01T08:00:00Z");
         stored("Spotify", "SUBSCRIPTIONS", 1_199, "2031-01-31T08:00:00Z");
         UUID spotifyHike = stored("Spotify", "SUBSCRIPTIONS", 1_399, "2031-03-02T08:00:00Z");
-        // Electricity that changes every month: not a recurring charge at a steady price.
+        // Electricity that changes every month: recurring, but its price varies.
         stored("City Electric", "UTILITIES", 8_412, "2031-01-03T08:00:00Z");
         stored("City Electric", "UTILITIES", 9_377, "2031-02-03T08:00:00Z");
         // March, for the spending summary, with both of its edges.
@@ -101,16 +101,18 @@ class ApiIT {
     }
 
     @Test
-    void recurringChargesAreSteadyMonthlyCharges() {
+    void recurringChargesAreEveryChargeAMonthApart() {
         given().port(port).queryParam("userId", user)
                 .when().get("/api/recurring")
                 .then().statusCode(200)
-                .body("merchant", contains("Netflix", "Spotify"))
-                .body("status", contains("ACTIVE", "PRICE_UP"))
-                .body("[1].priceCents", is(1_399))
-                .body("[1].previousPriceCents", is(1_199))
-                .body("[0].nextExpectedAt", is("2031-04-02T08:00:00Z"))
-                .body("[0].yearlyCostCents", is(18_588));
+                // City Electric's price moves (it would be VARIES), but its last charge was in February, more than a
+                // month before the user's newest transaction, so timing wins: OVERDUE.
+                .body("merchant", contains("City Electric", "Netflix", "Spotify"))
+                .body("status", contains("OVERDUE", "ACTIVE", "PRICE_UP"))
+                .body("[2].priceCents", is(1_399))
+                .body("[2].previousPriceCents", is(1_199))
+                .body("[1].nextExpectedAt", is("2031-04-02T08:00:00Z"))
+                .body("[1].yearlyCostCents", is(18_588));
     }
 
     @Test

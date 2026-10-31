@@ -73,32 +73,41 @@ class RecurringChargeFinderTest {
     }
 
     @Test
-    void aBillThatChangesEveryMonthIsNotListed() {
+    void aBillThatChangesEveryMonthVariesWithItsLastTwoAmounts() {
         charge("City Electric", Category.UTILITIES, 8_412, 0);
         charge("City Electric", Category.UTILITIES, 9_377, 31);
         charge("City Electric", Category.UTILITIES, 7_950, 59);
 
-        assertThat(found(60)).isEmpty();
+        assertThat(found(60)).singleElement().satisfies(electric -> {
+            assertThat(electric.status()).isEqualTo(Status.VARIES);
+            assertThat(electric.previousPriceCents()).isEqualTo(9_377);
+            assertThat(electric.priceCents()).isEqualTo(7_950);
+        });
     }
 
     @Test
-    void aSecondHikeInARowDropsOffLikeThePriceHikeRuleMisses() {
+    void aSecondHikeInARowStaysListedAsVariesNotPriceUp() {
         charge("Apple iCloud+", Category.SUBSCRIPTIONS, 299, 0);
         charge("Apple iCloud+", Category.SUBSCRIPTIONS, 299, 30);
         charge("Apple iCloud+", Category.SUBSCRIPTIONS, 399, 60);
         charge("Apple iCloud+", Category.SUBSCRIPTIONS, 499, 90);
 
-        // The months before the latest charge aren't steady, so it isn't PRICE_UP by the rule's definition.
-        assertThat(found(91)).isEmpty();
+        // The months before the latest charge aren't steady, so it isn't PRICE_UP by the rule's definition, but it
+        // stays on the list with both amounts, so a subscription that keeps going up is still visible.
+        assertThat(found(91)).singleElement().satisfies(icloud -> {
+            assertThat(icloud.status()).isEqualTo(Status.VARIES);
+            assertThat(icloud.previousPriceCents()).isEqualTo(399);
+            assertThat(icloud.priceCents()).isEqualTo(499);
+        });
     }
 
     @Test
-    void aBillThatGoesUpThisMonthIsStillNotAPriceHike() {
+    void aBillThatGoesUpThisMonthVariesItIsNotAPriceHike() {
         charge("City Power & Light", Category.UTILITIES, 11_955, 0);
         charge("City Power & Light", Category.UTILITIES, 10_412, 31);
         charge("City Power & Light", Category.UTILITIES, 13_002, 59);
 
-        assertThat(found(60)).isEmpty();
+        assertThat(found(60)).extracting(RecurringCharge::status).containsExactly(Status.VARIES);
     }
 
     @Test

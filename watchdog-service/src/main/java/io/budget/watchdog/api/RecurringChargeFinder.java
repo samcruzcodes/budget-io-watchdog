@@ -13,9 +13,10 @@ import java.util.Map;
 import org.springframework.stereotype.Component;
 
 /**
- * Finds a user's recurring charges in their recent transactions, with the price-hike rule's own idea of "monthly at a
- * steady price", so every price-hike alert has a matching row here. That includes rent and bills, not only
- * subscriptions, which is why they're called recurring charges. Nothing is stored: it's worked out on each request.
+ * Finds a user's recurring charges in their recent transactions: every merchant whose last two charges were about a
+ * month apart, with the price-hike rule's own checks for "steady" and "price up", so every price-hike alert has a
+ * matching row here. That includes rent and bills, not only subscriptions, which is why they're called recurring
+ * charges. Nothing is stored: it's worked out on each request.
  */
 @Component
 class RecurringChargeFinder {
@@ -23,11 +24,13 @@ class RecurringChargeFinder {
     enum Status {
         /** The last two charges were a month apart at a steady price. */
         ACTIVE,
-        /**
-         * Steady for two months, then a charge more than the tolerance higher: exactly what price-hike alerts on. After
-         * two hikes in a row the months before aren't steady, so the merchant drops off until it's steady again.
-         */
+        /** Steady for two months, then a charge more than the tolerance higher: exactly what price-hike alerts on. */
         PRICE_UP,
+        /**
+         * Monthly, but the price isn't steady: a bill that changes every month, or a subscription that went up two
+         * months running (price-hike only fires after a steady stretch, so that second hike isn't PRICE_UP).
+         */
+        VARIES,
         /** No charge for longer than a month since the last one: cancelled, or missed. */
         OVERDUE
     }
@@ -82,7 +85,8 @@ class RecurringChargeFinder {
                 // requirement kept back-to-back hikes listed but made every rising utility bill a "price hike".
                 status = Status.PRICE_UP;
             } else {
-                continue; // a monthly merchant with a price that moves around, like electricity
+                // Still monthly, so still listed, with both amounts, instead of dropping off the list.
+                status = Status.VARIES;
             }
             if (Duration.between(last.occurredAt(), now).compareTo(monthly.maxGap()) > 0) {
                 status = Status.OVERDUE;
