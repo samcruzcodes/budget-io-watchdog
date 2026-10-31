@@ -1,0 +1,363 @@
+/* Budget.io Watchdog dashboard. Budget.io's identity: Poppins headings, #4CAF50 as the accent, #F4F4F9 background.
+   #4CAF50 is only used for fills and borders: as text on white it fails WCAG AA, so green text is #2E7D32.
+   Every text color below passes AA (4.5:1) on the background it's used on. */
+
+:root {
+  --bg: #f4f4f9;
+  --surface: #ffffff;
+  --border: #dde1e8;
+  --text: #1b2430;          /* 15.5:1 on white */
+  --muted: #545f6e;         /* 6.4:1 on white, 5.9:1 on --bg */
+  --accent: #4caf50;        /* fills and borders only */
+  --green-text: #2e7d32;    /* 5.1:1 on white, 4.7:1 on --bg */
+  --green-tint: #e8f5e9;
+  --red-text: #b42318;      /* 6.2:1 on --red-tint */
+  --red-tint: #fef3f2;
+  --amber-text: #8a4b00;    /* 6.6:1 on --amber-tint */
+  --amber-tint: #fff4e5;
+  --radius: 8px;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --heading: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --body: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--heading);
+  margin: 0;
+  line-height: 1.25;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--green-text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--green-text);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Header and navigation */
+
+.header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-inner,
+.tabs,
+.main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding-left: var(--space-6);
+  padding-right: var(--space-6);
+}
+
+.header-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-3);
+}
+
+.brand h1 {
+  font-size: 1.375rem;
+  font-weight: 700;
+}
+
+.brand-accent {
+  color: var(--green-text);
+}
+
+.brand-note,
+.sim-date {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.sim-date strong {
+  color: var(--text);
+}
+
+.header-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.tab {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 3px solid transparent;
+  color: var(--muted);
+  font-family: var(--heading);
+  font-weight: 500;
+  font-size: 0.9375rem;
+  text-decoration: none;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-current='page'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* Connection status: the word says it, the color only repeats it. */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-live {
+  color: var(--green-text);
+  background: var(--green-tint);
+  border-color: var(--accent);
+}
+
+.status-reconnecting {
+  color: var(--amber-text);
+  background: var(--amber-tint);
+}
+
+.status-disconnected {
+  color: var(--red-text);
+  background: var(--red-tint);
+}
+
+/* Page */
+
+.main {
+  padding-top: var(--space-6);
+  padding-bottom: var(--space-8);
+  display: grid;
+  gap: var(--space-6);
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--space-4);
+}
+
+.metric,
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.metric {
+  padding: var(--space-4);
+}
+
+.metric-label {
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.metric-value {
+  font-family: var(--heading);
+  font-size: 1.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-note,
+.panel-note,
+.cell-note {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.panel {
+  padding: var(--space-4);
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0; /* lets wide tables scroll inside the panel instead of widening the page */
+}
+
+.panel-head {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.panel-head h2 {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+/* Tables */
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+th,
+td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+thead th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+tbody th {
+  font-weight: 600;
+}
+
+.number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.row-flagged td:first-child {
+  box-shadow: inset 3px 0 0 var(--red-text);
+}
+
+.rule {
+  display: inline-block;
+  margin: 0 var(--space-1) var(--space-1) 0;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--red-text);
+  border-radius: 4px;
+  color: var(--red-text);
+  background: var(--red-tint);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* States */
+
+.state {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  padding: var(--space-6) var(--space-4);
+  color: var(--muted);
+}
+
+.state-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.state-error .state-title {
+  color: var(--red-text);
+}
+
+.stale-note {
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--amber-text);
+  background: var(--amber-tint);
+  color: var(--amber-text);
+  font-size: 0.875rem;
+}
+
+.button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--green-text);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--green-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--green-tint);
+}
+
+/* Small screens: tighter edges; tables scroll inside their panel. */
+
+@media (max-width: 640px) {
+  .header-inner,
+  .tabs,
+  .main {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .metric-value {
+    font-size: 1.5rem;
+  }
+}
