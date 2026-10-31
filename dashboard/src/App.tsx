@@ -2,12 +2,18 @@ import { StatusBadge } from './components/StatusBadge';
 import { simulatedDate } from './format';
 import { useLiveStream } from './LiveStream';
 import { useHashView } from './useHashView';
+import { Alerts } from './views/Alerts';
+import { Analytics } from './views/Analytics';
 import { LiveFeed } from './views/LiveFeed';
 import { Overview } from './views/Overview';
+import { Recurring } from './views/Recurring';
 
 const VIEWS = [
   { id: 'overview', label: 'Overview', render: () => <Overview /> },
   { id: 'feed', label: 'Live feed', render: () => <LiveFeed /> },
+  { id: 'alerts', label: 'Alerts', render: () => <Alerts /> },
+  { id: 'analytics', label: 'Analytics', render: () => <Analytics /> },
+  { id: 'recurring', label: 'Recurring', render: () => <Recurring /> },
 ] as const;
 
 type ViewId = (typeof VIEWS)[number]['id'];

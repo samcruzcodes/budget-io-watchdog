@@ -27,7 +27,7 @@ export function LiveFeed() {
         <Empty title="No transactions yet">The simulator starts publishing a few seconds after the stack is up.</Empty>
       ) : (
         <div className="table-scroll">
-          <table data-testid="feed-table">
+          <table data-testid="feed-table" className="stack-on-mobile">
             <thead>
               <tr>
                 <th scope="col">Time (simulated)</th>
@@ -43,15 +43,15 @@ export function LiveFeed() {
                 const raised = alerts.get(tx.transactionId) ?? [];
                 return (
                   <tr key={tx.transactionId} className={raised.length > 0 ? 'row-flagged' : undefined}>
-                    <td className="nowrap">{simulatedDateTime(tx.occurredAt)}</td>
-                    <td className="nowrap">{tx.cardId}</td>
-                    <td>
+                    <td className="nowrap" data-label="Time (simulated)">{simulatedDateTime(tx.occurredAt)}</td>
+                    <td className="nowrap" data-label="Card">{tx.cardId}</td>
+                    <td data-label="Merchant">
                       {tx.merchant}
                       {tx.country !== 'US' && <span className="cell-note"> {tx.country}</span>}
                     </td>
-                    <td>{categoryName(tx.category)}</td>
-                    <td className="number">{money(tx.amountCents)}</td>
-                    <td>
+                    <td data-label="Category">{categoryName(tx.category)}</td>
+                    <td className="number" data-label="Amount">{money(tx.amountCents)}</td>
+                    <td data-label="Alerts">
                       {raised.length === 0 ? (
                         <span className="cell-note">None</span>
                       ) : (
