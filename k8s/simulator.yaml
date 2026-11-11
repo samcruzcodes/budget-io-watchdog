@@ -64,6 +64,10 @@ spec:
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: kafka:9092
+            # Overrides the demo preset: nothing in the cluster serves the dashboard's Resume button, and the demos
+            # here need the simulator to keep publishing.
+            - name: SIM_PAUSE_AFTER_DAYS
+              value: "0"
             # The heap gets 75% of the memory limit; metaspace, threads, and buffers need the rest.
             - name: JAVA_TOOL_OPTIONS
               value: -XX:MaxRAMPercentage=75

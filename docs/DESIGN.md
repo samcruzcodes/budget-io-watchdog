@@ -7,7 +7,7 @@ Watchdog watches card transactions as they happen and flags two kinds of problem
 
 It's the next version of Budget.io, my manual budget planner. This doc covers how Watchdog works, why I built it this way, and where it's going.
 
-**Status:** Phases 1 to 3 are built and tested: the transaction pipeline; six detection rules that check every new transaction; alerts that are saved and published; a warm-up that rebuilds rule memory after a restart; precision and recall measured against the simulator's labels; a REST API with a live stream; health checks; and integration and API tests against real Kafka and Postgres. The stack also runs on a local Kubernetes cluster (kind), with demos of self-healing, readiness, scaling, and rolling updates (Phase 3.5a). A web dashboard shows the overview, a live feed, alerts, analytics, and recurring charges (Phase 4, with simulation controls and browser tests still to come). Everything else is planned and marked that way below.
+**Status:** Phases 1 to 3 are built and tested: the transaction pipeline; six detection rules that check every new transaction; alerts that are saved and published; a warm-up that rebuilds rule memory after a restart; precision and recall measured against the simulator's labels; a REST API with a live stream; health checks; and integration and API tests against real Kafka and Postgres. The stack also runs on a local Kubernetes cluster (kind), with demos of self-healing, readiness, scaling, and rolling updates (Phase 3.5a). A web dashboard shows the overview, a live feed, alerts, analytics, and recurring charges, and controls the simulator (pause, resume, speed); browser tests drive it against the running stack, and a restarted simulator continues its run instead of replaying it (Phase 4). Everything else is planned and marked that way below.
 
 ## Roadmap
 
@@ -16,9 +16,9 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 | 1 | Transaction pipeline: a simulator, Kafka, and a Spring Boot service that validates transactions and stores them in PostgreSQL | Done |
 | 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
 | 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | Done |
-| 3.5 | Run the stack on a local Kubernetes cluster (kind) | In progress: the cluster and its demos (3.5a) are done; rule memory across pods (3.5b) is planned |
-| 4 | Dashboard, with a Selenium end-to-end test | In progress: all five views are built; simulation controls and the Selenium test are next |
-| 5 | CI with GitHub Actions, and benchmark results in the README | Planned |
+| 3.5 | Run the stack on a local Kubernetes cluster (kind) | The cluster and its demos (3.5a) are done; rule memory across pods (3.5b) is a documented limit, not built |
+| 4 | Dashboard, with a Selenium end-to-end test | Done: five views, simulator controls (pause, resume, speed, pausing itself), and browser tests. Focus mode and on-demand scenarios weren't built |
+| 5 | CI with GitHub Actions, and benchmark results in the README | CI is written (not yet run on GitHub); the benchmark is planned |
 | 6 | Data science: compare the rules with an ML model | Planned |
 
 I'd like to finish the dashboard and CI before Phase 6, but Phase 6 only needs the simulator, the labels, and the rules' alerts, so I could also pick it up right after Phase 3.
@@ -228,6 +228,10 @@ The simulator reads environment variables, with defaults that work for a local r
 | `SIM_DAYS_PER_MINUTE` | `30` | Simulated days per real minute, or `max`. |
 | `SIM_DURATION_DAYS` | `0` | Stop after this many simulated days (0 runs until stopped). |
 | `SIM_ISSUES_START_AFTER_DAYS` | `30` | The warm-up before anything is injected. |
+| `SIM_PAUSE_AFTER_DAYS` | `365` | Pause by itself every this many simulated days (0, the default, never does). |
+| `SIM_RESUME` | `true` (default) | After a restart, continue where the topic ends instead of publishing from the first day again. |
+| `SIM_START_PAUSED` | `false` (default) | Start with the clock paused, until someone resumes it. |
+| `SIM_CONTROL_PORT` | `8090` (default) | Where the control API listens. |
 | `SIM_RATE_*` | turned up | One rate per issue and look-alike. The unit is per card purchase, per renewal, per morning coffee, a share of free trials, or per user per day, depending on the rate. |
 | `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Where to publish. |
 
@@ -727,7 +731,7 @@ On my Mac (16 GB, Docker Desktop with 7.65 GiB and 8 CPUs), demo preset, 2026-10
 | Postgres pod deleted | all 1,503 transactions and 72 alerts were still there afterwards; the watchdog stayed Ready, with no restarts |
 | Kafka UI, opt-in | up with `--with-ui`, showing all five topics, and removed cleanly |
 
-**No message lost, checked by ID, not by count.** After demos 3, 5, and 7, with the simulator scaled to 0, `scripts/k8s-check-no-loss.sh` compared the set of transaction IDs on the `transactions` topic with the rows in Postgres, and the alert IDs on the `alerts` topic with the alert rows. Every time: the sets were identical, every alert was marked published, both dead-letter topics were empty, and both consumer groups were at lag 0. The last run covered 1,503 transactions and 72 alerts. The topic also held 1,220 repeated messages from two simulator restarts (it replays from day one), each stored once.
+**No message lost, checked by ID, not by count.** After demos 3, 5, and 7, with the simulator scaled to 0, `scripts/k8s-check-no-loss.sh` compared the set of transaction IDs on the `transactions` topic with the rows in Postgres, and the alert IDs on the `alerts` topic with the alert rows. Every time: the sets were identical, every alert was marked published, both dead-letter topics were empty, and both consumer groups were at lag 0. The last run covered 1,503 transactions and 72 alerts. The topic also held 1,220 repeated messages from two simulator restarts (at the time it replayed from day one; it now continues, see "A restarted simulator continues its run"), each stored once.
 
 **Delivery isn't detection.** That check proves every message was stored once and every alert published. It doesn't prove the rules raised the same alerts as a run where no pod moved: rule memory lives in each pod, so when a partition changes pods the new owner knows less. During the rolling update I measured how much less. The new pod took its warm-up snapshot at 17:13:48.659 UTC, but the old pod kept processing until it let go of each partition: 11 transactions (2, 4, and 5 on the three demo cards) were stored after the snapshot, so they're missing from the new pod's memory. What that does to the alerts is the 3.5b measurement.
 
@@ -748,9 +752,9 @@ Other things the demos showed:
 - With several watchdog pods, each pod's live stream (`/api/stream`) only shows the cards on its own partitions. The endpoints that read Postgres are the same from every pod.
 - Rule memory doesn't follow a partition to another pod (3.5b, below).
 
-## Phase 4: the dashboard (in progress)
+## Phase 4: the dashboard
 
-A web dashboard for demoing the system. Its first two parts are done: the API additions it needed, the app's frame, and all five views (Overview, Live feed, Alerts, Analytics, Recurring), served from Compose. Simulation controls and the browser tests are still planned (below).
+A web dashboard for demoing the system: the API additions it needed, the app's frame, and all five views (Overview, Live feed, Alerts, Analytics, Recurring), served from Compose. The simulator controls and the browser tests are in the next section.
 
 ### What it's built with
 
@@ -805,6 +809,123 @@ Three read-only additions, each with REST Assured tests, and no changes to detec
 
 Recurring charges also gained the `VARIES` status, described above with the rest of the API.
 
+## Phase 4c and 4d: simulator controls, restarts, and browser tests
+
+Built 2026-10-31 (the clock and the control API) and 2026-11-11 (everything else in this section).
+
+### Controlling the simulator
+
+The simulator's clock (`SimClock`) keeps an anchor: a simulated moment, the real moment it corresponds to, and a speed. Simulated now = the anchor's simulated moment + real time since the anchor × speed. Pausing, resuming, and changing the speed each move the anchor to the current simulated moment, so simulated time never jumps. The clock only decides when a planned transaction is sent, never what's planned, so none of this changes which transactions a seed produces. A test runs one seed straight through and again while another thread pauses, resumes, and changes the speed at random, and compares every transaction and label.
+
+A small HTTP API inside the simulator (`ControlServer`, on the JDK's own HTTP server, so no new dependency) exposes it:
+
+| Request | What it does |
+|---|---|
+| `GET /api/simulator/status` | state (`RUNNING` or `PAUSED`), speed, the simulated moment, how many transactions this process has published, the speeds on offer, where it continued an earlier run from (or null), the pause-after setting, and whether it's paused because that ran out |
+| `POST /api/simulator/pause`, `/resume` | freeze simulated time; continue from the same moment |
+| `POST /api/simulator/speed` | `{"daysPerMinute": 7}`, one of 1, 7, 30, 90, 365; anything else is a 400 that says so |
+
+Its port (8090) isn't published. The dashboard reaches it through nginx at `/api/simulator/`, on 127.0.0.1 only. Like the rest of the API it has no authentication.
+
+The header's controls show the simulator's own answer, polled every 3 seconds, and refresh right after every click. If the simulator stops answering, the header says so and switches the buttons off instead of leaving "running" on screen.
+
+**Pausing by itself.** With `SIM_PAUSE_AFTER_DAYS` (365 in the demo) the simulator pauses after that many simulated days, and again that many days after each Resume. Kafka and Postgres keep the demo's data in memory, and before this a demo left running at 365 days per minute reached the simulated year 2319 and 57,135 alerts in five hours. The header says "Simulator paused itself after 365 simulated days" with a Resume button. Kubernetes turns it off (`SIM_PAUSE_AFTER_DAYS=0` in `k8s/simulator.yaml`), because nothing in the cluster serves the dashboard.
+
+The simulator's heap is capped at 128 MB in Compose. Without a cap the JVM sized itself from the machine's memory and used about 300 MB.
+
+### A restarted simulator continues its run
+
+**What went wrong.** On 2026-10-31 the dashboard showed 9,736 transactions, 494 alerts, "Simulator running", throughput 0.0/s, and latency n/a, while the watchdog's log repeated "Skipped transaction: already stored". The container logs show why:
+
+1. The stack had been running and Postgres held 9,736 transactions, up to simulated December 2028.
+2. At 21:35 only the simulator's container was rebuilt (for the control API). Postgres and Kafka kept running.
+3. The new simulator process started from `SIM_START_DATE` with the same seed. Transaction IDs are name-based (seed, user, a counter), so it published the same IDs again, from January 2026.
+4. The watchdog stored each ID once, as designed, and skipped every one of those messages: exactly 9,736 skips before the first new transaction.
+
+So duplicate protection was doing its job, and the numbers were true: throughput and latency only count newly stored rows, and there were none. The simulator had no memory of how far it had got, and catching up at demo speed would have taken about as long as the first run did.
+
+**The fix.** At startup the simulator reads the newest message on each partition of `transactions` (`ResumePoint`) and continues from the earliest of those simulated times:
+
+- It still plans every day from the start date, because planning is what moves each user's state forward (subscriptions, trips, the random streams, the ID counters). It just doesn't send what's before the resume point, and the clock starts there. Planning without sending is fast: no waiting, no Kafka.
+- It takes the earliest of the partitions' newest times, not the latest. A crash can leave one partition a little behind, and starting slightly early only re-sends a few transactions, which the watchdog drops. Starting late would lose some.
+- Transactions at exactly the resume moment are sent again for the same reason: the earlier process may have stopped between two with the same timestamp.
+- If it can't read the topic's end within 30 seconds it exits, and Docker or Kubernetes restarts it. Guessing could skip transactions that were never published.
+
+Measured on the demo: restarting only the simulator at simulated 2026-02-22, it skipped 443 planned transactions without sending them, the watchdog skipped 3 messages at the boundary, and the totals carried on from 446 with throughput unchanged.
+
+| Where to remember the position | Pros | Cons |
+|---|---|---|
+| **The end of the `transactions` topic (what's built)** | no new topic, file, or dependency; the topic is already the record of what was sent | gone once Kafka deletes the old messages (7 days by default), or if Kafka's data is lost while Postgres survives |
+| A checkpoint in a compacted Kafka topic | survives retention; the standard pattern (Kafka Connect does this) | a new topic in four places, a write per simulated day, more to explain |
+| Ask the watchdog what it has stored | exactly matches what would be skipped | the source would depend on its consumer, and need it up and caught up first |
+| A file on a volume | simple to read | Compose and Kubernetes would both need a volume for a program that otherwise has no disk |
+
+When there's nothing to continue from (a new topic, or the messages have expired) it starts from the first day, as before. It continues from where the topic ends, not from the furthest point ever reached: if a full replay is forced and then interrupted, the next start continues that replay, and the watchdog skips the rest until it reaches new transactions. `SIM_RESUME=false` forces that, which is what you want after restarting only the Postgres container: its data is gone, and a full replay refills it.
+
+### Telling "busy skipping" from "idle"
+
+The fallback above still exists, and Kafka redelivers messages by design, so the watchdog now counts the messages it skips (`SkippedDuplicates`: one bucket per second for the last minute, in memory). `GET /api/stats` reports it as `duplicates`: skipped in the last 60 seconds and since this watchdog started. The dashboard uses it in two places:
+
+- **Overview:** when messages are arriving and none is new, a note under the numbers says so and that it's why throughput is zero. A few skips beside new transactions is normal and stays quiet.
+- **Analytics:** "Re-sent messages skipped" sits beside throughput and latency.
+
+The count is per process and starts at zero on a restart; with several watchdog pods each reports its own. Throughput and latency still come from Postgres and are the same from every pod.
+
+The Overview also explains an empty latency window ("nothing was stored in the last 5 min, so there's nothing to measure") instead of showing "n/a" three times.
+
+### Dashboard fixes from the review
+
+- **Answers arriving out of order.** Switching the rule filter or the user quickly could show the slower, older answer under the newer choice. Each request is numbered and only the newest one's answer is kept.
+- **Views that never refreshed.** Recurring charges, trial conversions, the month's spending, and the alerts list loaded once and went stale while the simulator ran. They now reload every 15 seconds, and the live feed refills over REST every 30 seconds, which also covers events the stream drops.
+- **Precision and recall in words.** The detection table says what each means, and the detailed view shows alerts that can't be scored yet when there are any, so the counts add up.
+- **Phones.** The detection and recurring tables turn into labeled cards like the feed and alerts tables. No view scrolls sideways at 390 px; a browser test checks all five.
+
+### Browser tests
+
+`e2e-tests/` is a Maven module that only builds with `-Pe2e`. `DashboardIT` drives headless Chrome with Selenium against the running Compose stack, through nginx, so it covers the browser, nginx's routing, the watchdog, the simulator's control API, Kafka, and Postgres together. Eight tests:
+
+- the Overview shows totals, throughput, the Live badge, and all six rules;
+- a new row appears in the live feed without a reload;
+- Pause holds the transaction total still, the simulator's own status says `PAUSED`, and Resume moves the total again;
+- a speed chosen in the header is confirmed by the simulator;
+- the alerts filter shows only the chosen rule's alerts;
+- Analytics draws three charts with data in each;
+- Recurring shows a different list for a different user;
+- no view scrolls sideways at phone width.
+
+They check behavior, not exact numbers, since they use whatever the simulator has produced. The disconnected state isn't covered: it would mean stopping the watchdog under the other tests. It's covered by the connection logic's unit tests.
+
+### CI
+
+`.github/workflows/ci.yml` has three jobs: the backend build with every unit and integration test (`./mvnw verify`, Testcontainers on the runner's Docker), the dashboard's tests and build, and the browser tests against `docker compose up`. It hasn't run on GitHub yet; the first push will show whether the runner needs anything changed.
+
+### Testing (this phase)
+
+- **Simulator:** `SimClockTest` (pause, resume, speed, waking a waiting thread), `ControlServerTest` (the API over real HTTP), `SimulatorRunnerTest` (the same run whatever the controls do; a restarted run sends exactly what the first hadn't, with the same IDs; pausing itself every N days), and `ResumePointIT`, which restarts a simulator against a real Kafka and checks the topic ends up with every transaction of an uninterrupted run and only the boundary repeats.
+- **Watchdog:** `SkippedDuplicatesTest` (the one-minute window), the skip count in `AlertPipelineIT` and `/api/stats`, and a new `AlertPipelineIT` case for a rebalance inside one process (below).
+- **Dashboard:** 36 Vitest tests, now including the pipeline and simulator wording.
+
+Totals on 2026-11-11: 245 unit tests and 39 integration tests in `./mvnw verify`, 36 in `npm test`, and 8 browser tests, all passing.
+
+### Rule memory across restarts and rebalances: what holds and what doesn't
+
+Whether the rules stay correct when consumers move, checked case by case to decide if the Phase 3.5b rebuild was needed now:
+
+| Case | Holds? | Why |
+|---|---|---|
+| The watchdog restarts (Compose, or one pod) | yes, within the 90-day window | the warm-up replays Postgres before the listener starts, and a transaction is committed to Postgres before its offset is committed to Kafka (`WarmUpIT`) |
+| Kafka redelivers a message | yes | the insert reports it as already stored and the rules never see it (`AlertPipelineIT`) |
+| A rebalance inside one process (after the laptop sleeps, or a listener restart) | yes | the history is in that process's memory behind a per-card lock, whichever thread gets the partition (new test: `theRulesRememberACardAcrossARebalanceInsideOneProcess`) |
+| A partition moves to **another pod** | no | the new owner only knows what its own warm-up loaded when it started: 11 transactions were missing in the measured rolling update |
+
+The shipped setups run one watchdog process (Compose, and `replicas: 1` on Kubernetes), where all three "yes" rows apply. The gap only exists when the watchdog is scaled out, and it costs detection accuracy around the handover, never a stored transaction or a published alert.
+
+A sound fix isn't small. Each of the six rules would need a way to forget one card, the engine would rebuild a card from Postgres under its lock when its partition is assigned, the listener would need to know which stored cards belong to which partition, and a pod that lost its partition mid-transaction would still be a hole. It also needs multi-pod runs to verify. So it stays a documented limit of scaling out, and the 3.5b plan below is unchanged.
+
+### Not built from the 4c plan
+
+Focus mode (filter every view to one user), triggering a scenario on demand, the label schema change that goes with it, and Kafka retention limits. Retention limits would also shorten how long a restarted simulator can find its place, which is one more reason to prefer a compacted checkpoint if they're added.
+
 ## Planned work
 
 ### Phase 3.5b: rule memory across pods
@@ -822,16 +943,15 @@ My plan: measure the gap first, by running the same seed with 1 pod and with 3 a
 - an Ingress for the dashboard;
 - autoscaling on consumer lag (KEDA) instead of CPU, explained but not built. A consumer can fall far behind while its CPU stays low, and pods beyond the partition count sit idle.
 
-### Phase 4: the rest of the dashboard
+### Phase 4: what's left
 
-The views are built (above). Still planned:
-
-- **Simulation controls** from the dashboard: start, pause, resume, and change speed without restarting the simulator (and without any container touching the Docker socket); pause automatically after a set number of simulated days; Kafka retention limits; a focus mode that filters every view to one user; and triggering a scenario on demand for a live demo, labeled as manual so the headline metrics only count the seeded run. The design and its decisions are settled; it's built next.
-- **A Selenium test** running headless Chrome against the Compose stack, covering every view, the filters, the live updates, the disconnected state, phone and desktop widths, and the controls.
+- **Focus mode:** a user picker in the header that filters every view to one user.
+- **Scenarios on demand:** trigger card testing, a duplicate, a binge, or a foreign charge from the dashboard for a live demo, labeled as manual so the headline metrics only count the seeded run.
+- **Kafka retention limits** on every topic.
 
 ### Phase 5: CI and benchmark
 
-GitHub Actions will run the backend build and tests, the dashboard build, and the end-to-end test on every push. A benchmark with about 1,000 simulated users at max speed will measure maximum throughput, latency at a steady load below that maximum, and precision and recall over a full simulated year. Those numbers go in the README, and the same run produces the Phase 6 dataset.
+The GitHub Actions workflow is written (above). Still planned: a benchmark with about 1,000 simulated users at max speed, to measure maximum throughput, latency at a steady load below that maximum, and precision and recall over a full simulated year. Those numbers go in the README, and the same run produces the Phase 6 dataset.
 
 Threshold tuning happens here too, on the benchmark preset rather than the demo, because the demo plants problems far more often than real life and that inflates precision. I'll tune on one seed and report the results on a different seed, so the numbers aren't graded on the same data the thresholds were tuned on.
 
@@ -949,11 +1069,20 @@ Some of these cover parts that aren't built yet.
 | Proving no loss on Kubernetes | a script that compares the actual ID sets on the topics and in Postgres, plus DLTs and lag | comparing counts | equal counts can hide one missing and one extra; a set difference can't |
 | Packaging manifests (stretch) | Kustomize | Helm | plain YAML and built into kubectl; Helm is for charts other people install |
 | Autoscaling (stretch) | not built; consumer lag (KEDA) is the right signal | CPU-based autoscaling | a consumer can fall behind with low CPU, and pods past the partition count sit idle |
+| Controlling the simulator | a small HTTP API inside it, reached through nginx | a Kafka control topic | answers at once, so the dashboard shows the real state; no new topic or dependency |
+| A restarted simulator | continue from the newest message on each partition of `transactions`, taking the earliest | a compacted checkpoint topic; asking the watchdog; a file | no new topic or dependency; re-sending a few is safe because ingest stores each ID once. Limit: only while Kafka still holds the messages |
+| Skipped duplicates | counted in memory per process and reported by `/api/stats` | logs only; a database table | zero throughput with a busy consumer looked like a dead pipeline; an in-memory count is enough to tell the two apart |
+| Demo left running | the simulator pauses itself every 365 simulated days | exit after N days; nothing | a paused process can be resumed from the dashboard, and the in-memory stores stop growing |
+| Browser tests | Selenium against the running Compose stack, in a module built only with `-Pe2e` | part of `./mvnw verify`; a mocked API | they need Chrome and the whole stack, and the point is the real path through nginx |
 
 ## Known limitations
 
 - There's one watchdog instance, and the rules' history lives in its memory.
-- When the watchdog runs as several pods on Kubernetes, rule memory doesn't follow a partition to another pod. A new pod warms up from Postgres when it starts, but what the old pod processes after that isn't in the new owner's memory: 11 transactions during the measured rolling update. Phase 3.5b will measure what that changes in the alerts and rebuild memory when a pod is assigned a partition.
+- A restarted simulator finds its place from the `transactions` topic. If Kafka has already deleted those messages (7 days by default), or Kafka's data was lost while Postgres survived, it starts from the first day again and the watchdog skips everything it already has until the replay catches up. The dashboard says so while it happens.
+- The skipped-duplicates count is per watchdog process and resets when it restarts.
+- CI hasn't run on GitHub yet, and there's no benchmark: the speed numbers in the README are from the 3-user demo, not a measured maximum.
+- The browser tests need the stack up and don't cover the disconnected state.
+- When the watchdog runs as several pods on Kubernetes, rule memory doesn't follow a partition to another pod. A new pod warms up from Postgres when it starts, but what the old pod processes after that isn't in the new owner's memory: 11 transactions during the measured rolling update. The single-process cases (a restart, a redelivery, a rebalance between threads) do hold; the table under "Rule memory across restarts and rebalances" lists each with its test.
 - The warm-up only replays 90 simulated days, so a restarted watchdog forgets countries the card only used before that (a charge there can fire new-country once), and spending-spike's baseline is rebuilt from 90 days instead of all history.
 - The demo's Kafka is a single node that keeps data in memory. If Kafka itself goes down, the demo loses whatever it was holding. Real setups write to disk and keep copies on several servers.
 - Retrying forever protects valid transactions during an outage, but a bug that throws while storing a valid message would stall its partition until someone fixes it. A bug in a rule can't: the engine catches it.

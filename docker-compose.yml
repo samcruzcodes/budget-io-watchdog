@@ -2,7 +2,8 @@
 #   docker compose up --build                   Kafka, Postgres, the simulator, the watchdog, and the dashboard
 #                                               (http://localhost:8083)
 #   docker compose --profile tools up --build   also Kafka UI at http://localhost:8081
-# Kafka and Postgres keep their data in memory (tmpfs), so every `up` starts a fresh, deterministic run.
+# Kafka and Postgres keep their data in memory (tmpfs), so `down` then `up` starts a fresh, deterministic run.
+# Restarting or rebuilding only the simulator continues the run it finds on the topic (SIM_RESUME, on by default).
 # Credentials are for local development only, and every port is bound to 127.0.0.1 (this machine only).
 
 name: budget-io-watchdog
@@ -88,6 +89,11 @@ services:
     env_file: config/simulator.demo.env
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # A small fixed heap: without a limit the JVM sized itself from the machine's memory and used about 300 MB.
+      JAVA_TOOL_OPTIONS: -Xmx128m
+      # A restarted simulator continues its run. `SIM_RESUME=false docker compose up -d simulator` makes it publish
+      # everything again from the first day instead, for example to refill Postgres after restarting it alone.
+      SIM_RESUME: ${SIM_RESUME:-true}
     depends_on:
       kafka-init:
         condition: service_completed_successfully

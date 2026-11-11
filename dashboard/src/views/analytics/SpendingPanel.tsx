@@ -6,6 +6,9 @@ import { UserPicker } from '../../components/UserPicker';
 import { money } from '../../format';
 import { usePolling } from '../../usePolling';
 
+// The newest simulated month keeps growing while the simulator runs, so the month shown is reloaded.
+const SPENDING_EVERY_MS = 15_000;
+
 /** One user's month, grouped the way Budget.io groups a budget. */
 export function SpendingPanel() {
   const users = usePolling(api.users, null);
@@ -36,7 +39,7 @@ function SpendingFor({ users }: { users: UserSummary[] }) {
   const [user, setUser] = useState(users[0].userId);
   const newest = users.find((u) => u.userId === user)?.newestOccurredAt ?? users[0].newestOccurredAt;
   const [month, setMonth] = useState(newest.slice(0, 7)); // the user's newest simulated month, YYYY-MM
-  const summary = usePolling(() => api.spendingSummary(user, month), null, [user, month]);
+  const summary = usePolling(() => api.spendingSummary(user, month), SPENDING_EVERY_MS, [user, month]);
 
   return (
     <>

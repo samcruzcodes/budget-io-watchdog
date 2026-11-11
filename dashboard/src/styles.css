@@ -187,6 +187,63 @@ a {
   background: var(--red-tint);
 }
 
+/* Simulator controls */
+
+.sim-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.875rem;
+}
+
+.sim-state {
+  font-weight: 600;
+}
+
+.sim-running {
+  color: var(--green-text);
+}
+
+.sim-paused {
+  color: var(--amber-text);
+}
+
+.sim-unavailable,
+.sim-hint {
+  color: var(--muted);
+}
+
+.sim-unreachable {
+  color: var(--red-text);
+}
+
+.sim-error {
+  color: var(--red-text);
+}
+
+.button-small {
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.875rem;
+}
+
+.button:disabled,
+.sim-speed:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.sim-speed {
+  min-height: 2rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
 /* Page */
 
 .main {
@@ -332,6 +389,11 @@ tbody th {
   background: var(--amber-tint);
   color: var(--amber-text);
   font-size: 0.875rem;
+}
+
+/* A note that sits under a row of metrics instead of above a table. */
+.notice-below {
+  margin-top: var(--space-4);
 }
 
 .button {
@@ -588,6 +650,23 @@ tbody th {
 
   .stack-on-mobile td > * {
     justify-self: start; /* badges keep their own width instead of stretching across the cell */
+  }
+
+  /* A row's name (a rule, a merchant) becomes the card's title. */
+  .stack-on-mobile tbody th {
+    padding: 0;
+    border: 0;
+  }
+
+  /* The four-column quality table fits a phone once each "x of y" drops under its percent. */
+  .quality-compact th,
+  .quality-compact td {
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
+  }
+
+  .quality-compact .cell-note {
+    display: block;
   }
 
   .stack-on-mobile td::before {

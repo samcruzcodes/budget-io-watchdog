@@ -1,7 +1,8 @@
 package io.budget.watchdog.simulator;
 
+import java.io.IOException;
+import java.time.Instant;
 import java.time.InstantSource;
-import java.time.ZoneOffset;
 import org.apache.kafka.common.errors.InterruptException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,13 +15,19 @@ public final class SimulatorMain {
     private SimulatorMain() {
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
         SimulatorConfig config = SimulatorConfig.fromEnvironment(System.getenv());
         log.info("Starting: {}", config);
 
+        // A restarted simulator continues after the newest transaction already on the topic. Without this it would
+        // publish the same IDs again from the first day, and the watchdog would skip every one of them.
+        Instant resumeFrom = config.resume() ? ResumePoint.find(config.kafkaBootstrapServers()).orElse(null) : null;
+        log.info(resumeFrom == null ? "A new run from {}" : "Continuing an earlier run from {}",
+                resumeFrom == null ? config.startDate() : resumeFrom);
+
         Simulation simulation = Simulation.create(config);
-        SimClock clock = new SimClock(config.startDate().atStartOfDay(ZoneOffset.UTC).toInstant(),
-                config.daysPerMinute(), InstantSource.system(), Thread::sleep);
+        SimClock clock = new SimClock(SimulatorRunner.firstMoment(config.startDate(), resumeFrom),
+                config.daysPerMinute(), InstantSource.system(), config.startPaused());
 
         // `docker stop` sends SIGTERM. The JVM then runs shutdown hooks; this one interrupts the run and waits for it
         // to finish closing the producer, so messages already sent aren't lost.
@@ -35,13 +42,17 @@ public final class SimulatorMain {
         }));
 
         KafkaSink sink = new KafkaSink(config.kafkaBootstrapServers(), InstantSource.system());
+        SimulatorRunner runner = new SimulatorRunner(simulation, clock, sink, resumeFrom, config.pauseAfterDays());
+        ControlServer control = new ControlServer(config.controlPort(), clock, runner::progress);
+        control.start();
         try {
-            long published = new SimulatorRunner(simulation, clock, sink).run(config.startDate(), config.durationDays());
+            long published = runner.run(config.startDate(), config.durationDays());
             log.info("Finished: {} transactions published", published);
         } catch (InterruptedException | InterruptException e) {
             log.info("Stopping");
         } finally {
             Thread.interrupted(); // clear the interrupt so close() can flush what was already sent
+            control.stop();
             sink.close();
         }
     }

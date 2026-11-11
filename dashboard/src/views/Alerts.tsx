@@ -1,19 +1,21 @@
 import { useMemo, useState } from 'react';
 import { api } from '../api';
 import { RuleBadge } from '../components/RuleBadge';
-import { Empty, ErrorState, Loading } from '../components/States';
+import { Empty, ErrorState, Loading, StaleNote } from '../components/States';
 import { addAlerts, emptyFeed } from '../feed';
 import { ruleName, simulatedDateTime } from '../format';
 import { useLiveStream } from '../LiveStream';
 import { usePolling } from '../usePolling';
 
 const ALERTS_LIMIT = 100;
+// New alerts arrive over the live stream; this slower reload catches any the stream missed.
+const ALERTS_EVERY_MS = 15_000;
 
 /** Recent alerts, optionally for one rule, with the rule's own explanation. New ones arrive from the live stream. */
 export function Alerts() {
   const [rule, setRule] = useState(''); // '' = every rule
   const stats = usePolling(api.stats, null); // only for the list of rule IDs
-  const listed = usePolling(() => api.alerts(ALERTS_LIMIT, rule || undefined), null, [rule]);
+  const listed = usePolling(() => api.alerts(ALERTS_LIMIT, rule || undefined), ALERTS_EVERY_MS, [rule]);
   const { feed } = useLiveStream();
 
   // What the API returned, plus anything the stream brought since, for the same rule; each alert once.
@@ -44,6 +46,7 @@ export function Alerts() {
           </select>
         </div>
       </div>
+      {listed.data && listed.error && <StaleNote message={listed.error} />}
       {listed.loading ? (
         <Loading what="alerts" />
       ) : !listed.data ? (

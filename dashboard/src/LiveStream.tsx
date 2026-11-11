@@ -6,6 +6,9 @@ import { connected, failed, initialConnection, retryDelayMs, type ConnectionStat
 import { addAlerts, addTransactions, emptyFeed, type Feed } from './feed';
 
 const REFILL_SIZE = 100;
+// The stream is best effort: the watchdog drops events for a browser that falls far behind, and with several
+// watchdogs each stream only carries its own partitions. A slow REST refill catches whatever the stream missed.
+const REFILL_EVERY_MS = 30_000;
 
 interface LiveStream {
   feed: Feed;
@@ -73,7 +76,9 @@ export function LiveStreamProvider({ children }: { children: ReactNode }) {
 
     open();
     void refill(); // show recent history right away, even before the stream connects
+    const refillTimer = setInterval(() => void refill(), REFILL_EVERY_MS);
     return () => {
+      clearInterval(refillTimer);
       clearTimeout(retryTimer);
       source?.close();
     };

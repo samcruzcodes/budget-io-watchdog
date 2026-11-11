@@ -63,6 +63,9 @@ class StatsApiIT {
                 .body("detectors", everyItem(hasKey("unlabeledAlerts")))
                 .body("throughput.windowSeconds", is(60))
                 .body("latency.windowSeconds", is(300))
-                .body("latency", hasKey("p99Ms"));
+                .body("latency", hasKey("p99Ms"))
+                .body("duplicates.windowSeconds", is(60))
+                .body("duplicates", hasKey("skipped"))
+                .body("duplicates", hasKey("sinceStartup"));
     }
 }

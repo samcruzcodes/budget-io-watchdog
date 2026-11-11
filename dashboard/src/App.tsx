@@ -1,3 +1,4 @@
+import { SimulatorControls } from './components/SimulatorControls';
 import { StatusBadge } from './components/StatusBadge';
 import { simulatedDate } from './format';
 import { useLiveStream } from './LiveStream';
@@ -34,6 +35,7 @@ export function App() {
             <p className="brand-note">Card transactions, checked as they arrive</p>
           </div>
           <div className="header-status">
+            <SimulatorControls />
             <p className="sim-date" data-testid="simulated-date">
               Simulated date <strong>{newest ? simulatedDate(newest) : 'n/a'}</strong>
             </p>

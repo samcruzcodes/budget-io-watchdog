@@ -14,6 +14,12 @@ import java.util.Map;
  * @param durationDays         how many simulated days to run; 0 runs until stopped
  * @param issuesStartAfterDays warm-up: no injected issues or look-alikes before this many simulated days, because
  *                             several rules need history before they can work
+ * @param startPaused          start with the clock paused, so nothing is published until someone resumes it
+ * @param controlPort          where the control API listens (pause, resume, speed); 0 picks any free port
+ * @param pauseAfterDays       pause by itself every this many simulated days, so a demo left running stays small;
+ *                             0 never pauses
+ * @param resume               continue where an earlier simulator process stopped (see {@link ResumePoint}) instead
+ *                             of publishing everything again from the start date
  */
 record SimulatorConfig(
         long seed,
@@ -24,7 +30,11 @@ record SimulatorConfig(
         int durationDays,
         int issuesStartAfterDays,
         Rates rates,
-        String kafkaBootstrapServers) {
+        String kafkaBootstrapServers,
+        boolean startPaused,
+        int controlPort,
+        int pauseAfterDays,
+        boolean resume) {
 
     /** How often each scenario happens. Each rate is a probability; the comment gives what it applies to. */
     record Rates(
@@ -56,8 +66,12 @@ record SimulatorConfig(
         if (!(daysPerMinute > 0)) {
             throw new IllegalArgumentException("SIM_DAYS_PER_MINUTE must be positive, or 'max'");
         }
-        if (durationDays < 0 || issuesStartAfterDays < 0) {
-            throw new IllegalArgumentException("SIM_DURATION_DAYS and SIM_ISSUES_START_AFTER_DAYS can't be negative");
+        if (durationDays < 0 || issuesStartAfterDays < 0 || pauseAfterDays < 0) {
+            throw new IllegalArgumentException(
+                    "SIM_DURATION_DAYS, SIM_ISSUES_START_AFTER_DAYS, and SIM_PAUSE_AFTER_DAYS can't be negative");
+        }
+        if (controlPort < 0 || controlPort > 65_535) {
+            throw new IllegalArgumentException("SIM_CONTROL_PORT must be a port number, was " + controlPort);
         }
         personaMix = Collections.unmodifiableMap(new LinkedHashMap<>(personaMix));
     }
@@ -90,7 +104,18 @@ record SimulatorConfig(
                         rate(env, "SIM_RATE_TRIP", defaults.trip()),
                         rate(env, "SIM_RATE_TOLL_ROAD_TRIP", defaults.tollRoadTrip()),
                         rate(env, "SIM_RATE_FOREIGN_ONLINE_ORDER", defaults.foreignOnlineOrder())),
-                get(env, "KAFKA_BOOTSTRAP_SERVERS", "localhost:9094"));
+                get(env, "KAFKA_BOOTSTRAP_SERVERS", "localhost:9094"),
+                parseBoolean(get(env, "SIM_START_PAUSED", "false"), "SIM_START_PAUSED"),
+                Integer.parseInt(get(env, "SIM_CONTROL_PORT", "8090")),
+                Integer.parseInt(get(env, "SIM_PAUSE_AFTER_DAYS", "0")),
+                parseBoolean(get(env, "SIM_RESUME", "true"), "SIM_RESUME"));
+    }
+
+    private static boolean parseBoolean(String value, String name) {
+        if (!value.equalsIgnoreCase("true") && !value.equalsIgnoreCase("false")) {
+            throw new IllegalArgumentException(name + " must be true or false, was " + value);
+        }
+        return Boolean.parseBoolean(value);
     }
 
     private static String get(Map<String, String> env, String name, String fallback) {

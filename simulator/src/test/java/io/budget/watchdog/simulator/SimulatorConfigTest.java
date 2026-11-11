@@ -19,6 +19,10 @@ class SimulatorConfigTest {
         assertThat(config.durationDays()).isZero();
         assertThat(config.rates()).isEqualTo(SimulatorConfig.Rates.DEFAULTS);
         assertThat(config.kafkaBootstrapServers()).isEqualTo("localhost:9094");
+        assertThat(config.startPaused()).isFalse();
+        assertThat(config.controlPort()).isEqualTo(8090);
+        assertThat(config.pauseAfterDays()).as("never pauses by itself unless asked").isZero();
+        assertThat(config.resume()).as("a restart continues the earlier run").isTrue();
     }
 
     @Test
@@ -40,6 +44,34 @@ class SimulatorConfigTest {
         assertThatThrownBy(() -> SimulatorConfig.fromEnvironment(Map.of("SIM_RATE_PRICE_HIKE", "1.5")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("SIM_RATE_PRICE_HIKE");
+    }
+
+    @Test
+    void readsTheControlSettings() {
+        SimulatorConfig config = SimulatorConfig.fromEnvironment(Map.of("SIM_START_PAUSED", "true", "SIM_CONTROL_PORT", "9000"));
+
+        assertThat(config.startPaused()).isTrue();
+        assertThat(config.controlPort()).isEqualTo(9000);
+    }
+
+    @Test
+    void readsThePauseAfterAndResumeSettings() {
+        SimulatorConfig config = SimulatorConfig.fromEnvironment(Map.of("SIM_PAUSE_AFTER_DAYS", "365", "SIM_RESUME", "false"));
+
+        assertThat(config.pauseAfterDays()).isEqualTo(365);
+        assertThat(config.resume()).isFalse();
+    }
+
+    @Test
+    void rejectsANegativePauseAfter() {
+        assertThatThrownBy(() -> SimulatorConfig.fromEnvironment(Map.of("SIM_PAUSE_AFTER_DAYS", "-1")))
+                .hasMessageContaining("SIM_PAUSE_AFTER_DAYS");
+    }
+
+    @Test
+    void rejectsAStartPausedThatIsntTrueOrFalse() {
+        assertThatThrownBy(() -> SimulatorConfig.fromEnvironment(Map.of("SIM_START_PAUSED", "yes")))
+                .hasMessageContaining("SIM_START_PAUSED must be true or false");
     }
 
     @Test

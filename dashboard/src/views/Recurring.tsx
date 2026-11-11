@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api, type UserSummary } from '../api';
-import { Empty, ErrorState, Loading } from '../components/States';
+import { Empty, ErrorState, Loading, StaleNote } from '../components/States';
 import { UserPicker } from '../components/UserPicker';
 import { categoryName, money, simulatedDate } from '../format';
 import { priceText, statusLabel, yearlyTotalCents } from '../recurring';
@@ -8,6 +8,8 @@ import { usePolling } from '../usePolling';
 
 // Trial conversions aren't recurring charges (they're alerts), so they're shown beside the list, from this one rule.
 const TRIAL_RULE = 'trial-conversion';
+// The list changes as simulated months pass, so it's reloaded while the view is open.
+const RECURRING_EVERY_MS = 15_000;
 
 export function Recurring() {
   const users = usePolling(api.users, null);
@@ -22,8 +24,8 @@ export function Recurring() {
 
 function RecurringFor({ users }: { users: UserSummary[] }) {
   const [user, setUser] = useState(users[0].userId);
-  const charges = usePolling(() => api.recurring(user), null, [user]);
-  const trials = usePolling(() => api.alerts(50, TRIAL_RULE, user), null, [user]);
+  const charges = usePolling(() => api.recurring(user), RECURRING_EVERY_MS, [user]);
+  const trials = usePolling(() => api.alerts(50, TRIAL_RULE, user), RECURRING_EVERY_MS, [user]);
 
   return (
     <>
@@ -44,6 +46,7 @@ function RecurringFor({ users }: { users: UserSummary[] }) {
             </p>
           )}
         </div>
+        {charges.data && charges.error && <StaleNote message={charges.error} />}
         {charges.loading ? (
           <Loading what="recurring charges" />
         ) : !charges.data ? (
@@ -52,7 +55,7 @@ function RecurringFor({ users }: { users: UserSummary[] }) {
           <Empty title="No recurring charges yet">It takes two charges about a month apart, so give it a minute.</Empty>
         ) : (
           <div className="table-scroll">
-            <table data-testid="recurring-table">
+            <table data-testid="recurring-table" className="stack-on-mobile">
               <thead>
                 <tr>
                   <th scope="col">Merchant</th>
@@ -68,14 +71,14 @@ function RecurringFor({ users }: { users: UserSummary[] }) {
                 {charges.data.map((charge) => (
                   <tr key={`${charge.cardId}/${charge.merchant}`}>
                     <th scope="row">{charge.merchant}</th>
-                    <td>
+                    <td data-label="Status">
                       <span className={`pill pill-${charge.status.toLowerCase()}`}>{statusLabel(charge.status)}</span>
                     </td>
-                    <td className="number">{priceText(charge)}</td>
-                    <td className="number">{money(charge.yearlyCostCents)}</td>
-                    <td className="nowrap">{simulatedDate(charge.nextExpectedAt)}</td>
-                    <td className="nowrap">{simulatedDate(charge.lastChargedAt)}</td>
-                    <td>{categoryName(charge.category)}</td>
+                    <td className="number" data-label="Price">{priceText(charge)}</td>
+                    <td className="number" data-label="Per year">{money(charge.yearlyCostCents)}</td>
+                    <td className="nowrap" data-label="Next expected">{simulatedDate(charge.nextExpectedAt)}</td>
+                    <td className="nowrap" data-label="Last charge">{simulatedDate(charge.lastChargedAt)}</td>
+                    <td data-label="Category">{categoryName(charge.category)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { categoryName, milliseconds, money, percent, ruleName, simulatedDate, simulatedDateTime } from './format';
+import { categoryName, milliseconds, money, percent, ruleName, simulatedDate, simulatedDateTime, speedLabel } from './format';
 
 describe('formatting', () => {
   it('shows cents as dollars without rounding errors', () => {
@@ -27,5 +27,11 @@ describe('formatting', () => {
     expect(ruleName('duplicate-charge')).toBe('Duplicate charge');
     expect(ruleName('new-country')).toBe('New country');
     expect(categoryName('SUBSCRIPTIONS')).toBe('Subscriptions');
+  });
+
+  it('names the simulator speed in simulated days per real minute', () => {
+    expect(speedLabel(30)).toBe('30 days/min');
+    expect(speedLabel(1)).toBe('1 day/min');
+    expect(speedLabel(null)).toBe('max');
   });
 });

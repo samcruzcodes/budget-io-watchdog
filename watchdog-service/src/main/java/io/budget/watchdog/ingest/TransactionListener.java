@@ -41,12 +41,13 @@ public class TransactionListener {
     private final RuleEngine ruleEngine;
     private final TransactionTemplate database;
     private final LiveFeed liveFeed;
+    private final SkippedDuplicates skippedDuplicates;
     private final Clock clock;
     private final AtomicLong stored = new AtomicLong();
 
     public TransactionListener(TransactionParser parser, TransactionRepository transactions, AlertRepository alerts,
             AlertPublisher publisher, RuleEngine ruleEngine, TransactionTemplate database, LiveFeed liveFeed,
-            Clock clock) {
+            SkippedDuplicates skippedDuplicates, Clock clock) {
         this.parser = parser;
         this.transactions = transactions;
         this.alerts = alerts;
@@ -54,6 +55,7 @@ public class TransactionListener {
         this.ruleEngine = ruleEngine;
         this.database = database;
         this.liveFeed = liveFeed;
+        this.skippedDuplicates = skippedDuplicates;
         this.clock = clock;
     }
 
@@ -75,8 +77,10 @@ public class TransactionListener {
                         tx.occurredAt(), tx.transactionId(), alert.explanation());
             }
         } else {
-            // A duplicate *message* (Kafka redelivered it), not a duplicate *charge*: the rules never see it.
+            // A duplicate *message* (Kafka redelivered it, or its source sent it again), not a duplicate *charge*: the
+            // rules never see it. It's counted, so /api/stats can tell "busy skipping" from "nothing arriving".
             log.info("Skipped transaction {}: already stored", tx.transactionId());
+            skippedDuplicates.record();
             if (!result.toPublish().isEmpty()) {
                 log.info("Republishing {} alerts for transaction {}", result.toPublish().size(), tx.transactionId());
             }

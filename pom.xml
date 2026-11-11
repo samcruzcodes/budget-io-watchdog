@@ -24,6 +24,16 @@
         <module>watchdog-service</module>
     </modules>
 
+    <!-- Browser tests need the running stack and Chrome, so they're only built on request: ./mvnw -Pe2e -pl e2e-tests verify -->
+    <profiles>
+        <profile>
+            <id>e2e</id>
+            <modules>
+                <module>e2e-tests</module>
+            </modules>
+        </profile>
+    </profiles>
+
     <properties>
         <java.version>21</java.version>
         <!-- Not managed by Spring Boot, so pinned here. -->

@@ -11,6 +11,8 @@ import static org.mockito.Mockito.verify;
 import io.budget.watchdog.TestKafka.PublishedAlert;
 import io.budget.watchdog.alerts.AlertPublisher;
 import io.budget.watchdog.alerts.AlertRepository;
+import io.budget.watchdog.ingest.SkippedDuplicates;
+import io.budget.watchdog.ingest.TransactionListener;
 import io.budget.watchdog.schema.Alert;
 import io.budget.watchdog.schema.Transaction;
 import java.time.Duration;
@@ -25,6 +27,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -54,6 +58,12 @@ class AlertPipelineIT {
 
     @MockitoSpyBean
     AlertPublisher publisher;
+
+    @Autowired
+    SkippedDuplicates skippedDuplicates;
+
+    @Autowired
+    KafkaListenerEndpointRegistry listeners;
 
     private String card;
     private Transaction original;
@@ -88,6 +98,7 @@ class AlertPipelineIT {
     @Test
     void aResentMessageNeverReachesTheRules() {
         Transaction later = charge(card, "Shell", "US", 4_210, MONDAY.plusSeconds(600));
+        long skippedBefore = skippedDuplicates.recent().sinceStartup();
 
         // The same message twice, then another charge on the card so we know the resend has been handled (one card's
         // messages are processed in order). If the resend reached the rules, duplicate-charge would match it against
@@ -96,6 +107,30 @@ class AlertPipelineIT {
 
         await().atMost(Duration.ofSeconds(30)).until(() -> isStored(later.transactionId()));
         assertThat(alertRowsFor(card)).isEmpty();
+        assertThat(transactionCountFor(card)).isEqualTo(2);
+        // The skip is counted, so /api/stats can show that messages are arriving but aren't new.
+        assertThat(skippedDuplicates.recent().sinceStartup()).isGreaterThan(skippedBefore);
+    }
+
+    @Test
+    void theRulesRememberACardAcrossARebalanceInsideOneProcess() {
+        TestKafka.send(original);
+        await().atMost(Duration.ofSeconds(30)).until(() -> isStored(original.transactionId()));
+
+        // Stopping the listener makes every consumer thread leave the group; starting it makes them rejoin, and Kafka
+        // hands the partitions out again, possibly to different threads. The card's history is in this process's
+        // memory, behind the rule engine's per-card lock, so whichever thread gets the card still knows the original.
+        MessageListenerContainer listener = listeners.getListenerContainer(TransactionListener.ID);
+        listener.stop();
+        listener.start();
+
+        TestKafka.send(duplicate);
+
+        awaitPublished(duplicate.transactionId());
+        assertThat(alertRowsFor(card)).singleElement()
+                .extracting(row -> row.get("explanation"))
+                .isEqualTo("Whole Foods Market charged $140.84 twice, 24 seconds apart.");
+        // Nothing was processed twice on the way: both charges are stored once.
         assertThat(transactionCountFor(card)).isEqualTo(2);
     }
 

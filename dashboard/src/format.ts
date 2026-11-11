@@ -49,3 +49,9 @@ export function ruleName(detector: string): string {
 export function categoryName(category: string): string {
   return category.charAt(0) + category.slice(1).toLowerCase();
 }
+
+/** "30 days/min" (simulated days per real minute), or "max" when the simulator doesn't wait at all. */
+export function speedLabel(daysPerMinute: number | null): string {
+  if (daysPerMinute === null) return 'max';
+  return `${daysPerMinute} ${daysPerMinute === 1 ? 'day' : 'days'}/min`;
+}

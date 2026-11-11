@@ -44,6 +44,8 @@ export interface Stats {
   detectors: RuleScore[];
   throughput: { windowSeconds: number; transactions: number; perSecond: number };
   latency: { windowSeconds: number; samples: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
+  // Messages skipped because their transaction was already stored: in the last window, and since the watchdog started.
+  duplicates: { windowSeconds: number; skipped: number; sinceStartup: number };
 }
 
 export type RecurringStatus = 'ACTIVE' | 'PRICE_UP' | 'VARIES' | 'OVERDUE';
@@ -81,13 +83,37 @@ export interface Activity {
   days: { date: string; transactions: number; spendingCents: number; alerts: number }[];
 }
 
+/** The simulator's clock, from its control API. `daysPerMinute` is null when it runs at "max" (no waiting). */
+export interface SimulatorStatus {
+  state: 'RUNNING' | 'PAUSED';
+  daysPerMinute: number | null;
+  simulatedNow: string;
+  published: number; // by this simulator process
+  speeds: number[]; // what can be chosen, in simulated days per real minute
+  resumedFrom: string | null; // where it continued an earlier run after a restart; null for a new run
+  pauseAfterDays: number; // it pauses by itself every this many simulated days; 0 = never
+  pausedItself: boolean; // paused right now because those days ran out
+}
+
 /** What went wrong, in words a person can act on. The API's 400s explain themselves in `detail`. */
 export class ApiError extends Error {}
 
 async function get<T>(path: string): Promise<T> {
+  return send<T>(path, { headers: { Accept: 'application/json' } });
+}
+
+async function post<T>(path: string, body?: unknown): Promise<T> {
+  return send<T>(path, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function send<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(path, { headers: { Accept: 'application/json' } });
+    response = await fetch(path, init);
   } catch {
     throw new ApiError("Can't reach the watchdog. Is it running?");
   }
@@ -122,4 +148,10 @@ export const api = {
     get<SpendingSummary>(`/api/spending/summary${query({ userId, month })}`),
   users: () => get<UserSummary[]>('/api/users'),
   activity: (days: number) => get<Activity>(`/api/activity${query({ days })}`),
+  simulator: {
+    status: () => get<SimulatorStatus>('/api/simulator/status'),
+    pause: () => post<SimulatorStatus>('/api/simulator/pause'),
+    resume: () => post<SimulatorStatus>('/api/simulator/resume'),
+    setSpeed: (daysPerMinute: number) => post<SimulatorStatus>('/api/simulator/speed', { daysPerMinute }),
+  },
 };

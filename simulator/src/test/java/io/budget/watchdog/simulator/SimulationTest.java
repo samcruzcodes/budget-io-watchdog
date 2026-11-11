@@ -296,7 +296,7 @@ class SimulationTest {
             everyPersona.put(persona, 1);
         }
         return new SimulatorConfig(seed, users, everyPersona, START, Double.POSITIVE_INFINITY, 0, WARM_UP_DAYS, rates,
-                "unused:9092");
+                "unused:9092", false, 0, 0, false);
     }
 
     static List<PlannedTransaction> simulate(SimulatorConfig config, int days) {
