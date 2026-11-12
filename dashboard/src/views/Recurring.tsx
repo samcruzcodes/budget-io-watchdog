@@ -4,6 +4,7 @@ import { Empty, ErrorState, Loading, StaleNote } from '../components/States';
 import { UserPicker } from '../components/UserPicker';
 import { categoryName, money, simulatedDate } from '../format';
 import { priceText, statusLabel, yearlyTotalCents } from '../recurring';
+import { firstRealUser } from '../scenarios';
 import { usePolling } from '../usePolling';
 
 // Trial conversions aren't recurring charges (they're alerts), so they're shown beside the list, from this one rule.
@@ -23,7 +24,7 @@ export function Recurring() {
 }
 
 function RecurringFor({ users }: { users: UserSummary[] }) {
-  const [user, setUser] = useState(users[0].userId);
+  const [user, setUser] = useState(firstRealUser(users).userId);
   const charges = usePolling(() => api.recurring(user), RECURRING_EVERY_MS, [user]);
   const trials = usePolling(() => api.alerts(50, TRIAL_RULE, user), RECURRING_EVERY_MS, [user]);
 

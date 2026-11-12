@@ -19,7 +19,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | The cluster and its demos (3.5a) are done; rule memory across pods (3.5b) is a documented limit, not built |
 | 4 | Dashboard, with a Selenium end-to-end test | Done: six views, simulator controls (pause, resume, speed, pausing itself), scenarios on demand, and browser tests. Focus mode wasn't built |
 | 5 | CI with GitHub Actions, and benchmark results in the README | CI is written (not yet run on GitHub); the benchmark is planned |
-| 6 | Data science: compare the rules with an ML model | Done as an offline experiment: a random forest scores higher than the rules on simulated data, with the caveats in that section |
+| 6 | Data science: compare the rules with an ML model | Done as an offline experiment: a random forest scores higher than the rules on simulated data; logistic regression doesn't clearly, with the caveats in that section |
 
 I'd like to finish the dashboard and CI before Phase 6, but Phase 6 only needs the simulator, the labels, and the rules' alerts, so I could also pick it up right after Phase 3.
 
@@ -876,7 +876,7 @@ The Overview also explains an empty latency window ("nothing was stored in the l
 
 ### Dashboard fixes from the review
 
-- **Answers arriving out of order.** Switching the rule filter or the user quickly could show the slower, older answer under the newer choice. Each request is numbered and only the newest one's answer is kept.
+- **Answers arriving out of order.** Switching the rule filter or the user quickly could show the slower, older answer under the newer choice. Each request is numbered and only the newest one's answer is kept. A timer tick is skipped while a request is still out; otherwise, with answers slower than the interval, every one would be discarded as stale and the view would never update.
 - **Views that never refreshed.** Recurring charges, trial conversions, the month's spending, and the alerts list loaded once and went stale while the simulator ran. They now reload every 15 seconds, and the live feed refills over REST every 30 seconds, which also covers events the stream drops.
 - **Precision and recall in words.** The detection table says what each means, and the detailed view shows alerts that can't be scored yet when there are any, so the counts add up.
 - **Phones.** The detection and recurring tables turn into labeled cards like the feed and alerts tables. No view scrolls sideways at 390 px; a browser test checks all five.
@@ -894,11 +894,11 @@ The Overview also explains an empty latency window ("nothing was stored in the l
 - Recurring shows a different list for a different user;
 - no view scrolls sideways at phone width.
 
-They check behavior, not exact numbers, since they use whatever the simulator has produced. The disconnected state isn't covered: it would mean stopping the watchdog under the other tests. It's covered by the connection logic's unit tests.
+They check behavior, not exact numbers, and wait on the system's state instead of sleeping: the pause test waits until the stored total stops changing, and the alerts test first runs two scenarios so the rows it filters are guaranteed to exist. (Earlier versions slept for fixed times and assumed the simulator had already produced a duplicate-charge alert, which isn't true on a two-minute-old stack.) The disconnected state isn't covered: it would mean stopping the watchdog under the other tests. It's covered by the connection logic's unit tests.
 
 ### CI
 
-`.github/workflows/ci.yml` has three jobs: the backend build with every unit and integration test (`./mvnw verify`, Testcontainers on the runner's Docker), the dashboard's tests and build, and the browser tests against `docker compose up`. It hasn't run on GitHub yet; the first push will show whether the runner needs anything changed.
+`.github/workflows/ci.yml` has three jobs: the backend build with every unit and integration test (`./mvnw verify`, Testcontainers on the runner's Docker), the dashboard's tests and build, and the browser tests against `docker compose up`.
 
 ### Testing (this phase)
 
@@ -962,7 +962,7 @@ Nothing in the dashboard or the watchdog can create a transaction or an alert ov
 | How the dashboard finds a run's transactions | the scenario ID in each ground-truth label, read by `ScenarioResults` in the `evaluation` package | match by card or by time; a new field on the transaction | the label already groups a scenario's transactions, and only evaluation code may read labels, so the rules still can't see it |
 | How demo data is told apart | `source = DEMO` on the transaction and `persona = DEMO` on the label | a new `manual` field and a label schema v2 (the 4c plan) | `source` already means "where this came from", and no schema version or dual parsing is needed |
 | Precision and recall | `DetectionMetrics` leaves out `source = DEMO` in both queries | count them; a separate "caught X of Y" line | a demo run is built to be caught on a quiet card, so counting it would flatter both numbers |
-| Who may trigger one | off unless `SIM_SCENARIOS_ENABLED=true`; the control port isn't published and nginx listens on 127.0.0.1 | authentication | the rest of the API has none either; this keeps it to a local demo |
+| Who may trigger one | off unless `SIM_SCENARIOS_ENABLED=true`; the control port isn't published and nginx listens on 127.0.0.1; every POST to the control API must be `application/json` (415 otherwise) | authentication | the rest of the API has none either; this keeps it to a local demo. The content-type rule is there because a page on another site can make a browser send a plain form post to localhost without asking, but a JSON post needs a preflight this server never grants |
 
 The totals on the Overview (transactions processed, alerts raised) count everything stored, demo runs included, so they can be higher than the per-rule alert counts, which leave demo runs out. The detection table says so.
 
@@ -1000,9 +1000,9 @@ The preset (`config/simulator.ml.env`) plants problems less often than the demo 
 
 A transaction is "suspicious" if the simulator's answer key gives it an issue type. That's one transaction for a duplicate, a price hike, a trial conversion, or a foreign charge, but about five for a card-testing run (every probe and the final purchase) and for a binge day (every purchase in the category that day). The rules alert once per incident by design, so two scores are reported:
 
-- **Precision:** of the transactions flagged, the share that are labeled.
 - **Incident recall:** of the planted incidents, the share with at least one flagged labeled transaction. This is how the watchdog has always scored its rules.
-- **Transaction recall** is reported too, with the warning that it understates the rules (35% against 85% by incident).
+- **Precision:** incidents caught / (incidents caught + legitimate transactions flagged). Each caught incident counts once, however many of its transactions were flagged. Counting per transaction instead would give a model that flags all five charges of one card-testing run five true positives for one caught problem, against one for a rule.
+- **Transaction-level precision and recall** are reported beside them. They understate the rules' recall (35% against 85% by incident) and overstate the models' precision (96% against 92% for the forest), which is why they aren't the headline.
 
 ## Features, and how leakage was kept out
 
@@ -1018,53 +1018,53 @@ Logistic regression (median imputation with a "missing" flag, a log squeeze, sca
 
 ## Results on the held-out run
 
-| Approach | Precision | Incident recall | F1 | Transaction recall | PR-AUC | Legitimate transactions flagged |
-|---|---|---|---|---|---|---|
-| Six rules (Java) | 42% | 85% | 56% | 35% | n/a | 3,450 |
-| Logistic regression | 63% | 84% | 72% | 69% | 0.6334 | 2,873 |
-| Random forest | 93% | 97% | 95% | 79% | 0.904 | 402 |
-| Random forest, fewer simulator tells | 92% | 96% | 94% | 78% | 0.8919 | 462 |
+| Approach | Precision | Incident recall | F1 | Transaction precision | Transaction recall | PR-AUC | Legitimate transactions flagged |
+|---|---|---|---|---|---|---|---|
+| Six rules (Java) | 42% | 85% | 56% | 42% | 35% | n/a | 3,450 |
+| Logistic regression | 50% | 75% | 60% | 66% | 60% | 0.6334 | 2,167 |
+| Random forest | 92% | 94% | 93% | 96% | 75% | 0.904 | 238 |
+| Random forest, fewer simulator tells | 89% | 94% | 91% | 94% | 76% | 0.8919 | 331 |
 
 Incidents caught, by kind:
 
 | Planted problem | Rules | Logistic regression | Random forest |
 |---|---|---|---|
 | CARD_TESTING | 100% | 100% | 100% |
-| DUPLICATE_CHARGE | 100% | 85% | 93% |
-| NEW_COUNTRY | 89% | 91% | 95% |
-| PRICE_HIKE | 86% | 64% | 98% |
-| SPENDING_SPIKE | 59% | 84% | 95% |
-| TRIAL_CONVERSION | 100% | 86% | 100% |
+| DUPLICATE_CHARGE | 100% | 81% | 86% |
+| NEW_COUNTRY | 89% | 87% | 93% |
+| PRICE_HIKE | 86% | 48% | 96% |
+| SPENDING_SPIKE | 59% | 76% | 91% |
+| TRIAL_CONVERSION | 100% | 73% | 100% |
 
 Legitimate transactions flagged, by kind (the look-alikes the simulator plants so nothing scores perfectly):
 
 | Legitimate behavior | Transactions | Rules flagged | Logistic regression | Random forest |
 |---|---|---|---|---|
-| APP_STORE_PURCHASES | 1,561 | 650 | 194 | 2 |
-| CANCELLED_TRIAL | 737 | 0 | 40 | 0 |
-| DOUBLE_COFFEE | 1,208 | 604 | 604 | 32 |
-| FOREIGN_ONLINE_ORDER | 371 | 296 | 35 | 3 |
-| LEGIT_BIG_PURCHASE | 759 | 470 | 572 | 0 |
-| LEGIT_TRAVEL | 8,321 | 147 | 75 | 31 |
-| ORDINARY | 236,792 | 913 | 1,339 | 334 |
-| TOLL_ROAD_TRIP | 1,820 | 370 | 14 | 0 |
+| APP_STORE_PURCHASES | 1,561 | 650 | 122 | 1 |
+| CANCELLED_TRIAL | 737 | 0 | 29 | 0 |
+| DOUBLE_COFFEE | 1,208 | 604 | 604 | 16 |
+| FOREIGN_ONLINE_ORDER | 371 | 296 | 16 | 1 |
+| LEGIT_BIG_PURCHASE | 759 | 470 | 564 | 0 |
+| LEGIT_TRAVEL | 8,321 | 147 | 34 | 18 |
+| ORDINARY | 236,792 | 913 | 790 | 202 |
+| TOLL_ROAD_TRIP | 1,820 | 370 | 8 | 0 |
 
 Where the rules and the forest disagree (2,903 incidents, 251,569 legitimate transactions):
 
-- **Only the forest caught:** 391 incidents, mostly spending spikes (281) and price hikes (67). The spike rule needs three standard deviations over a fixed baseline, and the hike rule only fires after two steady months, so a second hike in a row gets past it.
-- **Only the rules caught:** 49 incidents (24 duplicates, 16 foreign charges, 9 spikes). A rule's condition is exact; the forest's score for these fell under its threshold.
-- **Both missed:** 48 incidents, mostly mild binge days.
-- **Only the rules flagged, wrongly:** 3,330 legitimate transactions, most of them planted look-alikes (app purchases, second coffees, big planned purchases, tolls, foreign online orders).
-- **Only the forest flagged, wrongly:** 282, nearly all ordinary shopping that happened to be large for the card.
-- **Both flagged, wrongly:** 120.
+- **Only the forest caught:** 360 incidents, mostly spending spikes (259) and price hikes (59). The spike rule needs three standard deviations over a fixed baseline, and the hike rule only fires after two steady months, so a second hike in a row gets past it.
+- **Only the rules caught:** 91 incidents (51 duplicates, 24 foreign charges, 14 spikes). A rule's condition is exact; the forest's score for these fell under its threshold.
+- **Both missed:** 79 incidents, mostly mild binge days (53) and price hikes (20).
+- **Only the rules flagged, wrongly:** 3,386 legitimate transactions, most of them planted look-alikes (app purchases, second coffees, big planned purchases, tolls, foreign online orders).
+- **Only the forest flagged, wrongly:** 174, nearly all ordinary shopping that happened to be large for the card.
+- **Both flagged, wrongly:** 64.
 
 ## What this means
 
-On this data the random forest is clearly better than the rules, and logistic regression is better on F1 but worse on duplicates, price hikes, and trial conversions, where the signal is an exact condition a straight line can't express. The rules' recall is already 85%; what they lack is precision, because a fixed condition can't tell a duplicate from a second coffee.
+On this data the random forest is clearly better than the rules (F1 93% against 56%). Logistic regression is not: its F1 is a few points higher (60%), but it catches fewer incidents than the rules (75% against 85%) and misses half the price hikes, because signals like "exactly the same amount again" or "steady, then higher" are conditions a straight line can't express. The rules' recall is already 85%; what they lack is precision, because a fixed condition can't tell a duplicate from a second coffee. Even the forest catches fewer duplicates than the rule does (86% against 100%): an exact rule is hard to beat at the exact thing it checks.
 
 What that does *not* show:
 
-- **It's the simulator, not the world.** The models were trained on output of the same generator they were tested on. A duplicate always posts 5 to 90 seconds later and a second coffee 1 to 5 minutes later; big purchases come in a few fixed prices. A forest learns those lines exactly. Removing the three features most likely to give the simulator away (`merchant_prior_tx`, `days_since_merchant`, `hour`) only moved F1 from 95% to 94%, so it isn't leaning on those, but the look-alikes themselves are tidier than real life.
+- **It's the simulator, not the world.** The models were trained on output of the same generator they were tested on. A duplicate always posts 5 to 90 seconds later and a second coffee 1 to 5 minutes later; big purchases come in a few fixed prices. A forest learns those lines exactly. Removing the three features most likely to give the simulator away (`merchant_prior_tx`, `days_since_merchant`, `hour`) only moved F1 from 93% to 91%, so it isn't leaning on those, but the look-alikes themselves are tidier than real life.
 - **Labels are perfect and instant here.** Real labels come from disputes, weeks later, and only for some transactions.
 - **Nobody is adapting.** Real fraud changes to avoid whatever detects it.
 - **The rules weren't tuned.** Their thresholds are starting values; each model's threshold was fitted to labeled data.
@@ -1078,7 +1078,7 @@ Would adding a model to the live pipeline be worth it? The evidence supports try
 |---|---|---|---|
 | Where the data comes from | the real pipeline, exported from Postgres | a separate generator; a Java exporter | the rules' alerts are then the production rule engine's, on the very same transactions |
 | Test set | a second simulator run with another seed | a random row split; a time split of one run | rows from one card or one incident on both sides would leak; a separate run shares nothing |
-| Unit of recall | incidents, with transaction-level beside it | transactions only | rules alert once per incident, so transaction recall alone would misrepresent them |
+| Unit of recall and precision | incidents: a caught incident counts once in both, with transaction-level numbers beside them | transactions only | rules alert once per incident, so transaction recall misrepresents them, and counting a model's five flags on one card-testing run as five true positives flatters its precision. My first version made that second mistake; rescoring moved logistic regression's F1 from 72% to 60% and the forest's from 95% to 93% |
 | Merchant name and country code | left out of the features | one-hot or target encoding | the simulator's fraud has its own merchant names, which a model could memorize |
 | Models | logistic regression and a random forest, no search | gradient boosting; a grid search; an isolation forest | two well-understood baselines answer the question; the forest's margin doesn't hinge on tuning |
 | Showing it | a static tab that imports the saved JSON at build time | an API endpoint; live scoring | these are offline results, and a file can't be mistaken for live predictions |
@@ -1216,7 +1216,7 @@ Some of these cover parts that aren't built yet.
 - There's one watchdog instance, and the rules' history lives in its memory.
 - A restarted simulator finds its place from the `transactions` topic. If Kafka has already deleted those messages (7 days by default), or Kafka's data was lost while Postgres survived, it starts from the first day again and the watchdog skips everything it already has until the replay catches up. The dashboard says so while it happens.
 - The skipped-duplicates count is per watchdog process and resets when it restarts.
-- CI hasn't run on GitHub yet, and there's no benchmark: the speed numbers in the README are from the 3-user demo, not a measured maximum.
+- On GitHub the backend and dashboard jobs pass; the browser job failed on two pushes. One cause was reproduced locally on a fresh stack and fixed (a test read a filtered table before it loaded); whether that was the only cause isn't confirmed until the next push. There's no benchmark: the speed numbers in the README are from the 3-user demo, not a measured maximum.
 - The browser tests need the stack up and don't cover the disconnected state.
 - When the watchdog runs as several pods on Kubernetes, rule memory doesn't follow a partition to another pod. A new pod warms up from Postgres when it starts, but what the old pod processes after that isn't in the new owner's memory: 11 transactions during the measured rolling update. The single-process cases (a restart, a redelivery, a rebalance between threads) do hold; the table under "Rule memory across restarts and rebalances" lists each with its test.
 - The warm-up only replays 90 simulated days, so a restarted watchdog forgets countries the card only used before that (a charge there can fire new-country once), and spending-spike's baseline is rebuilt from 90 days instead of all history.

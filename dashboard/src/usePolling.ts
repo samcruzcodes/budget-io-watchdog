@@ -20,18 +20,24 @@ export function usePolling<T>(load: () => Promise<T>, intervalMs: number | null,
   // Answers can come back out of order: pick user A, then B, and A's slower answer could land last and be shown
   // under B's name. Each request gets a number, and only the newest one's answer is kept.
   const newestRequest = useRef(0);
+  // A timer tick is skipped while the last request is still out. Otherwise, when answers take longer than the
+  // interval, every answer would be thrown away as "not the newest" and the view would never update.
+  const waiting = useRef(false);
 
   const refresh = useCallback(() => {
     const request = ++newestRequest.current;
+    waiting.current = true;
     run().then(
       (result) => {
         if (request !== newestRequest.current) return;
+        waiting.current = false;
         setData(result);
         setError(null);
         setLoading(false);
       },
       (failure: unknown) => {
         if (request !== newestRequest.current) return;
+        waiting.current = false;
         setError(failure instanceof Error ? failure.message : String(failure));
         setLoading(false);
       },
@@ -43,7 +49,9 @@ export function usePolling<T>(load: () => Promise<T>, intervalMs: number | null,
     setData(null);
     refresh();
     if (intervalMs === null) return undefined;
-    const timer = setInterval(refresh, intervalMs);
+    const timer = setInterval(() => {
+      if (!waiting.current) refresh();
+    }, intervalMs);
     return () => clearInterval(timer);
   }, [refresh, intervalMs]);
 

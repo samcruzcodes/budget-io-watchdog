@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Alert, ScenarioResult, ScenarioRun, Transaction } from './api';
-import { alertLink, detectorFor, feedLink, GIVE_UP_AFTER_MS, SCENARIOS, verdict } from './scenarios';
+import { alertLink, detectorFor, feedLink, firstRealUser, GIVE_UP_AFTER_MS, SCENARIOS, verdict } from './scenarios';
 
 const run: ScenarioRun = {
   scenarioId: '8c3c8674-0000-4000-8000-000000000000',
@@ -80,6 +80,12 @@ describe('scenario copy and links', () => {
     expect(Object.keys(SCENARIOS)).toEqual([
       'CARD_TESTING', 'DUPLICATE_CHARGE', 'NEW_COUNTRY', 'PRICE_HIKE', 'SPENDING_SPIKE', 'TRIAL_CONVERSION',
     ]);
+  });
+
+  it('opens per-user views on a simulated person, not the demo user', () => {
+    const users = [{ userId: 'demo-user' }, { userId: 'user-0001' }, { userId: 'user-0002' }];
+    expect(firstRealUser(users).userId).toBe('user-0001');
+    expect(firstRealUser([{ userId: 'demo-user' }]).userId).toBe('demo-user'); // nobody else yet
   });
 
   it('turns a scenario type into its rule ID', () => {

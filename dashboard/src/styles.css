@@ -706,6 +706,13 @@ tbody th {
   background: var(--data);
 }
 
+/* An expandable table sits in a grid cell, and a grid cell is as wide as its widest content unless told otherwise.
+   Without this, opening a wide table on a phone widens the whole page instead of scrolling inside the panel. */
+.table-view {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .table-view summary {
   cursor: pointer;
   color: var(--green-text);

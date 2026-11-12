@@ -49,6 +49,17 @@ export const SCENARIOS: Record<string, ScenarioCopy> = {
   },
 };
 
+/** Every scenario run's card belongs to this user (DemoScenarios.USER in the simulator). */
+export const DEMO_USER = 'demo-user';
+
+/**
+ * The user a per-user view should open on: the first simulated person. The demo user sorts first by name, and a view
+ * that opened on it would show a handful of scripted charges instead of a person's year.
+ */
+export function firstRealUser<T extends { userId: string }>(users: T[]): T {
+  return users.find((user) => user.userId !== DEMO_USER) ?? users[0];
+}
+
 /** "DUPLICATE_CHARGE" -> "duplicate-charge": each rule's ID is its issue type in lower case with dashes. */
 export function detectorFor(type: string): string {
   return type.toLowerCase().replaceAll('_', '-');

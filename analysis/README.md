@@ -6,7 +6,7 @@ An offline experiment: can a supervised model, given the same history the six ru
 analysis/generate_dataset.sh                      # a few minutes; needs Docker. Writes data/seed-101.csv and seed-202.csv
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python experiment.py                    # about a minute. Writes results/metrics.json and the dashboard's copy
-.venv/bin/python -m pytest tests                  # 16 tests
+.venv/bin/python -m pytest tests                  # 17 tests
 ```
 
 | File | What it does |
@@ -38,9 +38,9 @@ The preset (`config/simulator.ml.env`) plants problems less often than the demo 
 
 A transaction is "suspicious" if the simulator's answer key gives it an issue type. That's one transaction for a duplicate, a price hike, a trial conversion, or a foreign charge, but about five for a card-testing run (every probe and the final purchase) and for a binge day (every purchase in the category that day). The rules alert once per incident by design, so two scores are reported:
 
-- **Precision:** of the transactions flagged, the share that are labeled.
 - **Incident recall:** of the planted incidents, the share with at least one flagged labeled transaction. This is how the watchdog has always scored its rules.
-- **Transaction recall** is reported too, with the warning that it understates the rules (35% against 85% by incident).
+- **Precision:** incidents caught / (incidents caught + legitimate transactions flagged). Each caught incident counts once, however many of its transactions were flagged. Counting per transaction instead would give a model that flags all five charges of one card-testing run five true positives for one caught problem, against one for a rule.
+- **Transaction-level precision and recall** are reported beside them. They understate the rules' recall (35% against 85% by incident) and overstate the models' precision (96% against 92% for the forest), which is why they aren't the headline.
 
 ## Features, and how leakage was kept out
 
@@ -56,53 +56,53 @@ Logistic regression (median imputation with a "missing" flag, a log squeeze, sca
 
 ## Results on the held-out run
 
-| Approach | Precision | Incident recall | F1 | Transaction recall | PR-AUC | Legitimate transactions flagged |
-|---|---|---|---|---|---|---|
-| Six rules (Java) | 42% | 85% | 56% | 35% | n/a | 3,450 |
-| Logistic regression | 63% | 84% | 72% | 69% | 0.6334 | 2,873 |
-| Random forest | 93% | 97% | 95% | 79% | 0.904 | 402 |
-| Random forest, fewer simulator tells | 92% | 96% | 94% | 78% | 0.8919 | 462 |
+| Approach | Precision | Incident recall | F1 | Transaction precision | Transaction recall | PR-AUC | Legitimate transactions flagged |
+|---|---|---|---|---|---|---|---|
+| Six rules (Java) | 42% | 85% | 56% | 42% | 35% | n/a | 3,450 |
+| Logistic regression | 50% | 75% | 60% | 66% | 60% | 0.6334 | 2,167 |
+| Random forest | 92% | 94% | 93% | 96% | 75% | 0.904 | 238 |
+| Random forest, fewer simulator tells | 89% | 94% | 91% | 94% | 76% | 0.8919 | 331 |
 
 Incidents caught, by kind:
 
 | Planted problem | Rules | Logistic regression | Random forest |
 |---|---|---|---|
 | CARD_TESTING | 100% | 100% | 100% |
-| DUPLICATE_CHARGE | 100% | 85% | 93% |
-| NEW_COUNTRY | 89% | 91% | 95% |
-| PRICE_HIKE | 86% | 64% | 98% |
-| SPENDING_SPIKE | 59% | 84% | 95% |
-| TRIAL_CONVERSION | 100% | 86% | 100% |
+| DUPLICATE_CHARGE | 100% | 81% | 86% |
+| NEW_COUNTRY | 89% | 87% | 93% |
+| PRICE_HIKE | 86% | 48% | 96% |
+| SPENDING_SPIKE | 59% | 76% | 91% |
+| TRIAL_CONVERSION | 100% | 73% | 100% |
 
 Legitimate transactions flagged, by kind (the look-alikes the simulator plants so nothing scores perfectly):
 
 | Legitimate behavior | Transactions | Rules flagged | Logistic regression | Random forest |
 |---|---|---|---|---|
-| APP_STORE_PURCHASES | 1,561 | 650 | 194 | 2 |
-| CANCELLED_TRIAL | 737 | 0 | 40 | 0 |
-| DOUBLE_COFFEE | 1,208 | 604 | 604 | 32 |
-| FOREIGN_ONLINE_ORDER | 371 | 296 | 35 | 3 |
-| LEGIT_BIG_PURCHASE | 759 | 470 | 572 | 0 |
-| LEGIT_TRAVEL | 8,321 | 147 | 75 | 31 |
-| ORDINARY | 236,792 | 913 | 1,339 | 334 |
-| TOLL_ROAD_TRIP | 1,820 | 370 | 14 | 0 |
+| APP_STORE_PURCHASES | 1,561 | 650 | 122 | 1 |
+| CANCELLED_TRIAL | 737 | 0 | 29 | 0 |
+| DOUBLE_COFFEE | 1,208 | 604 | 604 | 16 |
+| FOREIGN_ONLINE_ORDER | 371 | 296 | 16 | 1 |
+| LEGIT_BIG_PURCHASE | 759 | 470 | 564 | 0 |
+| LEGIT_TRAVEL | 8,321 | 147 | 34 | 18 |
+| ORDINARY | 236,792 | 913 | 790 | 202 |
+| TOLL_ROAD_TRIP | 1,820 | 370 | 8 | 0 |
 
 Where the rules and the forest disagree (2,903 incidents, 251,569 legitimate transactions):
 
-- **Only the forest caught:** 391 incidents, mostly spending spikes (281) and price hikes (67). The spike rule needs three standard deviations over a fixed baseline, and the hike rule only fires after two steady months, so a second hike in a row gets past it.
-- **Only the rules caught:** 49 incidents (24 duplicates, 16 foreign charges, 9 spikes). A rule's condition is exact; the forest's score for these fell under its threshold.
-- **Both missed:** 48 incidents, mostly mild binge days.
-- **Only the rules flagged, wrongly:** 3,330 legitimate transactions, most of them planted look-alikes (app purchases, second coffees, big planned purchases, tolls, foreign online orders).
-- **Only the forest flagged, wrongly:** 282, nearly all ordinary shopping that happened to be large for the card.
-- **Both flagged, wrongly:** 120.
+- **Only the forest caught:** 360 incidents, mostly spending spikes (259) and price hikes (59). The spike rule needs three standard deviations over a fixed baseline, and the hike rule only fires after two steady months, so a second hike in a row gets past it.
+- **Only the rules caught:** 91 incidents (51 duplicates, 24 foreign charges, 14 spikes). A rule's condition is exact; the forest's score for these fell under its threshold.
+- **Both missed:** 79 incidents, mostly mild binge days (53) and price hikes (20).
+- **Only the rules flagged, wrongly:** 3,386 legitimate transactions, most of them planted look-alikes (app purchases, second coffees, big planned purchases, tolls, foreign online orders).
+- **Only the forest flagged, wrongly:** 174, nearly all ordinary shopping that happened to be large for the card.
+- **Both flagged, wrongly:** 64.
 
 ## What this means
 
-On this data the random forest is clearly better than the rules, and logistic regression is better on F1 but worse on duplicates, price hikes, and trial conversions, where the signal is an exact condition a straight line can't express. The rules' recall is already 85%; what they lack is precision, because a fixed condition can't tell a duplicate from a second coffee.
+On this data the random forest is clearly better than the rules (F1 93% against 56%). Logistic regression is not: its F1 is a few points higher (60%), but it catches fewer incidents than the rules (75% against 85%) and misses half the price hikes, because signals like "exactly the same amount again" or "steady, then higher" are conditions a straight line can't express. The rules' recall is already 85%; what they lack is precision, because a fixed condition can't tell a duplicate from a second coffee. Even the forest catches fewer duplicates than the rule does (86% against 100%): an exact rule is hard to beat at the exact thing it checks.
 
 What that does *not* show:
 
-- **It's the simulator, not the world.** The models were trained on output of the same generator they were tested on. A duplicate always posts 5 to 90 seconds later and a second coffee 1 to 5 minutes later; big purchases come in a few fixed prices. A forest learns those lines exactly. Removing the three features most likely to give the simulator away (`merchant_prior_tx`, `days_since_merchant`, `hour`) only moved F1 from 95% to 94%, so it isn't leaning on those, but the look-alikes themselves are tidier than real life.
+- **It's the simulator, not the world.** The models were trained on output of the same generator they were tested on. A duplicate always posts 5 to 90 seconds later and a second coffee 1 to 5 minutes later; big purchases come in a few fixed prices. A forest learns those lines exactly. Removing the three features most likely to give the simulator away (`merchant_prior_tx`, `days_since_merchant`, `hour`) only moved F1 from 93% to 91%, so it isn't leaning on those, but the look-alikes themselves are tidier than real life.
 - **Labels are perfect and instant here.** Real labels come from disputes, weeks later, and only for some transactions.
 - **Nobody is adapting.** Real fraud changes to avoid whatever detects it.
 - **The rules weren't tuned.** Their thresholds are starting values; each model's threshold was fitted to labeled data.

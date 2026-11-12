@@ -25,9 +25,20 @@ def test_one_alert_on_an_incident_catches_it():
 
     assert result["confusion"] == {"tp": 1, "fp": 1, "fn": 3, "tn": 2}
     assert result["transaction"]["recall"] == 1 / 4         # three of the four labeled charges weren't flagged
-    assert result["incident"] == {"precision": 0.5, "recall": 0.5, "f1": 0.5, "incidents": 2, "caught": 1}
+    assert result["incident"] == {"precision": 0.5, "recall": 0.5, "f1": 0.5, "incidents": 2, "caught": 1,
+                                  "false_alarms": 1}
     assert result["recall_by_issue_type"]["CARD_TESTING"] == {"incidents": 1, "caught": 1, "recall": 1.0}
     assert result["recall_by_issue_type"]["DUPLICATE_CHARGE"]["recall"] == 0.0
+
+
+def test_flagging_every_charge_of_one_incident_does_not_buy_extra_precision():
+    # Like a model: all three charges of the attack flagged, plus the double coffee. One problem caught, one false
+    # alarm. Counted per transaction that would be 3 right out of 4; counted per incident it is 1 out of 2.
+    result = score(FRAME, [True, True, True, False, True, False, False])
+
+    assert result["transaction"]["precision"] == 3 / 4
+    assert result["incident"]["precision"] == 1 / 2
+    assert result["incident"]["caught"] == 1
 
 
 def test_false_positives_are_counted_by_what_they_landed_on():

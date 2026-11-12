@@ -10,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,6 +86,14 @@ final class ControlServer {
         try (exchange) {
             String action = exchange.getRequestURI().getPath().substring("/api/simulator/".length());
             String method = exchange.getRequestMethod();
+            // Every change must be sent as JSON. A web page on another site can make a browser send a plain form
+            // post to localhost without asking, but not one with this content type: the browser first asks
+            // permission (a "preflight" request), and this server never grants it. So only the dashboard's own page,
+            // or a tool like curl, can pause the simulator or run a scenario.
+            if (method.equals("POST") && !isJson(exchange)) {
+                send(exchange, 415, new Problem(415, "send POST requests with Content-Type: application/json"));
+                return;
+            }
             switch (action) {
                 case "status" -> requireThen(exchange, method, "GET", () -> { });
                 case "pause" -> requireThen(exchange, method, "POST", clock::pause);
@@ -133,6 +142,11 @@ final class ControlServer {
             return;
         }
         send(exchange, 200, demos.run(type));
+    }
+
+    private static boolean isJson(HttpExchange exchange) {
+        String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
+        return contentType != null && contentType.toLowerCase(Locale.ROOT).startsWith("application/json");
     }
 
     /** Runs {@code change} and answers with the new status, if the method is right. */

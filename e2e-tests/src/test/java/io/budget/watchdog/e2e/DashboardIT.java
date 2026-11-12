@@ -9,6 +9,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,6 +21,7 @@ import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.json.Json;
 import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
@@ -105,14 +107,17 @@ class DashboardIT {
         // The simulator itself says so, not just the button.
         assertThat(get("/api/simulator/status")).contains("\"state\":\"PAUSED\"");
 
-        // Whatever was already on its way gets stored; after that the total must hold still.
-        Thread.sleep(8_000);
-        long whilePaused = number("total-transactions");
-        Thread.sleep(8_000); // longer than the overview's 5-second refresh
-        assertThat(number("total-transactions")).isEqualTo(whilePaused);
+        // A few messages were already in Kafka when the clock stopped. Once the watchdog has stored those, the total
+        // must hold still: several reads in a row give the same number (running, it grows by about 4 a second).
+        long whilePaused = awaitSteadyTotal();
+        wait.until(d -> number("total-transactions") == whilePaused); // and the page catches up with it
+        assertThat(storedTotal()).isEqualTo(whilePaused);
 
         browser.findElement(By.cssSelector("[data-testid=simulator-toggle]")).click();
         wait.until(d -> text("simulator-state").equals("Simulator running"));
+        assertThat(get("/api/simulator/status")).contains("\"state\":\"RUNNING\"");
+        // First the watchdog stores something new, then the page shows it (it asks every 5 seconds).
+        wait.until(d -> storedTotal() > whilePaused);
         wait.until(d -> number("total-transactions") > whilePaused);
     }
 
@@ -129,16 +134,19 @@ class DashboardIT {
     }
 
     @Test
-    void theAlertsFilterShowsOnlyThatRule() {
+    void theAlertsFilterShowsOnlyThatRule() throws Exception {
+        // The test makes its own data instead of hoping the simulator has produced some: one duplicate-charge alert
+        // and one of another rule, through the real pipeline. On a stack that's two minutes old there may be neither.
+        post("/api/simulator/scenarios", "{\"type\": \"DUPLICATE_CHARGE\"}");
+        post("/api/simulator/scenarios", "{\"type\": \"PRICE_HIKE\"}");
         open("alerts");
-        wait.until(d -> !d.findElements(By.cssSelector("[data-testid=alerts-table] tbody tr")).isEmpty());
+        wait.until(d -> rules(d).contains("duplicate-charge") && rules(d).contains("price-hike"));
 
         new Select(browser.findElement(By.id("rule-filter"))).selectByValue("duplicate-charge");
 
-        wait.until(d -> d.findElements(By.cssSelector("[data-testid=alerts-table] tbody tr")).stream()
-                .allMatch(row -> "duplicate-charge".equals(row.getDomAttribute("data-rule"))));
+        // Not just "every row matches", which is also true of the empty table shown while the filtered list loads.
+        wait.until(d -> !rules(d).isEmpty() && rules(d).stream().allMatch("duplicate-charge"::equals));
         List<WebElement> rows = browser.findElements(By.cssSelector("[data-testid=alerts-table] tbody tr"));
-        assertThat(rows).isNotEmpty();
         // Each alert carries the rule's own explanation, like "... charged $140.84 twice, 24 seconds apart."
         assertThat(rows.getFirst().getText()).contains("charged");
     }
@@ -160,9 +168,12 @@ class DashboardIT {
     void recurringListsEachUsersMonthlyCharges() {
         open("recurring");
         wait.until(d -> !d.findElements(By.cssSelector("[data-testid=recurring-table] tbody tr")).isEmpty());
+        // The view opens on a simulated person, not on the demo user that scenario runs create.
+        Select user = new Select(browser.findElement(By.id("recurring-user")));
+        assertThat(user.getFirstSelectedOption().getDomAttribute("value")).isEqualTo("user-0001");
         String firstUsersCharges = browser.findElement(By.cssSelector("[data-testid=recurring-table] tbody")).getText();
 
-        new Select(browser.findElement(By.id("recurring-user"))).selectByIndex(1);
+        user.selectByValue("user-0002");
 
         wait.until(d -> {
             List<WebElement> body = d.findElements(By.cssSelector("[data-testid=recurring-table] tbody"));
@@ -188,6 +199,9 @@ class DashboardIT {
         for (String view : VIEWS) {
             open(view);
             wait.until(d -> d.findElements(By.cssSelector("[aria-busy=true]")).isEmpty());
+            // Expandable tables too: opened, a wide one must scroll inside its panel, not widen the page.
+            ((JavascriptExecutor) browser).executeScript(
+                    "document.querySelectorAll('details').forEach(details => { details.open = true; })");
             Number overflow = (Number) ((JavascriptExecutor) browser).executeScript(
                     "return document.documentElement.scrollWidth - document.documentElement.clientWidth");
             assertThat(overflow.intValue()).as("sideways overflow in pixels on the %s view", view).isZero();
@@ -200,6 +214,34 @@ class DashboardIT {
         browser.get(BASE_URL + "/#" + view);
         browser.navigate().refresh(); // a hash-only change wouldn't reload the page between tests
         wait.until(d -> d.findElement(By.cssSelector("a.tab[aria-current=page]")).getDomAttribute("href").equals("#" + view));
+    }
+
+    /** The rule of each row in the alerts table, re-read each time so a re-render can't leave a stale element. */
+    private static List<String> rules(WebDriver driver) {
+        return driver.findElements(By.cssSelector("[data-testid=alerts-table] tbody tr")).stream()
+                .map(row -> row.getDomAttribute("data-rule")).toList();
+    }
+
+    /** How many transactions the watchdog has stored, asked directly (the page only asks every 5 seconds). */
+    private static long storedTotal() {
+        try {
+            Map<String, Object> stats = new Json().toType(get("/api/stats"), Json.MAP_TYPE);
+            return ((Number) ((Map<?, ?>) stats.get("totals")).get("transactions")).longValue();
+        } catch (IOException | InterruptedException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Waits until the stored total stops changing: the same number on four reads, half a second apart. */
+    private static long awaitSteadyTotal() {
+        long[] last = {-1};
+        int[] same = {0};
+        return new WebDriverWait(browser, Duration.ofSeconds(30)).pollingEvery(Duration.ofMillis(500)).until(d -> {
+            long now = storedTotal();
+            same[0] = now == last[0] ? same[0] + 1 : 0;
+            last[0] = now;
+            return same[0] >= 3 ? now : null;
+        });
     }
 
     private static String text(String testId) {

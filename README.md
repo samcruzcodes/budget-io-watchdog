@@ -109,7 +109,7 @@ Run scenario  →  simulator  →  Kafka  →  watchdog (store, run the six rule
 - **Nothing is faked.** The dashboard never creates a transaction or an alert. It asks the simulator to publish, then asks the watchdog what it stored and flagged for that run's scenario ID. If a rule doesn't fire, the tab says "Not detected".
 - **Run it as often as you like.** Every run gets a new scenario ID, a new card, and new transaction IDs, so a rerun is never skipped as "already stored" and one run can't affect another.
 - **It doesn't touch the numbers.** Demo transactions are marked (`source` is `DEMO`, the user is `demo-user`) and left out of precision and recall. The seeded simulation is unaffected: the same seed still produces the same run.
-- **Local only.** The simulator refuses scenario requests unless `SIM_SCENARIOS_ENABLED=true` (the demo preset sets it). Its control port isn't published; the only way in is through nginx on 127.0.0.1.
+- **Local only.** The simulator refuses scenario requests unless `SIM_SCENARIOS_ENABLED=true` (the demo preset sets it). Its control port isn't published; the only way in is through nginx on 127.0.0.1. Every change (pause, resume, speed, scenarios) must be a JSON POST, which stops another website open in your browser from quietly posting to localhost.
 
 The same thing from a terminal:
 
@@ -148,13 +148,13 @@ cd dashboard && nvm use && npm ci && npm test && npm run build     # dashboard: 
 
 | Suite | Tests | What it runs against |
 |---|---|---|
-| Backend unit (`*Test`) | 270 | nothing: plain Java |
+| Backend unit (`*Test`) | 274 | nothing: plain Java |
 | Backend integration (`*IT`) | 43 | real Kafka and Postgres in Docker (Testcontainers) |
-| Dashboard unit (Vitest) | 50 | plain TypeScript logic |
+| Dashboard unit (Vitest) | 51 | plain TypeScript logic |
 | Browser and end-to-end (Selenium, headless Chrome) | 19 |
-| Analysis (pytest) | 16 | plain Python: features, scoring, the split | the running Compose stack, through nginx |
+| Analysis (pytest) | 17 | plain Python: features, scoring, the split | the running Compose stack, through nginx |
 
-All passing on 2026-11-11. What the tests cover, by the question they answer:
+All passing on 2026-11-12. What the tests cover, by the question they answer:
 
 - **Does a redelivered message get processed twice?** No: the insert reports it as already stored and the rules never see it. A real duplicated charge (a new ID, the same merchant and amount) is still caught.
 - **What if saving or publishing an alert fails halfway?** The transaction and its alerts roll back together and the retry saves them once. An alert that was saved but not published is published when the message comes back.
@@ -165,7 +165,7 @@ All passing on 2026-11-11. What the tests cover, by the question they answer:
 - **Do the demo scenarios really trip the rules?** A test runs all six against the live stack and checks that each makes exactly its own rule fire, once, with the expected explanation, and that a rerun uses new IDs.
 - **Does the dashboard show what the backend has?** The browser tests check live rows arriving, the alert filter, pause holding the totals still, and no sideways scrolling on a phone.
 
-`.github/workflows/ci.yml` runs the backend suite, the dashboard suite, and the browser tests on every push. It hasn't run on GitHub yet.
+`.github/workflows/ci.yml` runs the backend suite, the dashboard suite, and the browser tests on every push. On GitHub the backend and dashboard jobs pass. The browser job passed on its first run and then failed on the next two; a test that checked a filtered table before it had loaded fails the same way on a fresh local stack, and is fixed, along with fixed sleeps in the pause test that were replaced by waiting on the system's actual state. The browser tests create the data they need by running scenarios, so they don't depend on how long the stack has been up.
 
 ## What's been measured
 
@@ -197,16 +197,16 @@ Measured 2026-11-11. The numbers show the pipeline keeping up with what the simu
 
 An offline experiment in [analysis/](analysis/): given the same history the rules see, can a supervised model tell the planted problems from legitimate transactions better than the six rules? The data comes from the real pipeline (300 simulated people for a year, per seed), the rules' side is the alerts the Java rule engine actually raised, and the models are scored once on a separate simulator run they never saw.
 
-| Approach | Precision | Incident recall | F1 | Transaction recall | PR-AUC | Legitimate transactions flagged |
-|---|---|---|---|---|---|---|
-| Six rules (Java) | 42% | 85% | 56% | 35% | n/a | 3,450 |
-| Logistic regression | 63% | 84% | 72% | 69% | 0.6334 | 2,873 |
-| Random forest | 93% | 97% | 95% | 79% | 0.904 | 402 |
-| Random forest, fewer simulator tells | 92% | 96% | 94% | 78% | 0.8919 | 462 |
+| Approach | Precision | Incident recall | F1 | Transaction precision | Transaction recall | PR-AUC | Legitimate transactions flagged |
+|---|---|---|---|---|---|---|---|
+| Six rules (Java) | 42% | 85% | 56% | 42% | 35% | n/a | 3,450 |
+| Logistic regression | 50% | 75% | 60% | 66% | 60% | 0.6334 | 2,167 |
+| Random forest | 92% | 94% | 93% | 96% | 75% | 0.904 | 238 |
+| Random forest, fewer simulator tells | 89% | 94% | 91% | 94% | 76% | 0.8919 | 331 |
 
-Precision is the share of flagged transactions that belong to a planted incident; incident recall is the share of incidents with at least one flag; about 3% of the 258,705 held-out transactions belong to an incident.
+Incident recall is the share of planted incidents with at least one flagged transaction. Precision counts each caught incident once: incidents caught / (incidents caught + legitimate transactions flagged). The transaction-level columns count every labeled transaction separately; they understate the rules, which alert once per incident, and flatter the models, so they aren't the headline. About 3% of the 258,705 held-out transactions belong to an incident.
 
-On this simulated data the random forest is clearly better, mostly because it tells the planted look-alikes apart (a second coffee, an app purchase, a planned big purchase), which fixed rules can't. That is not a claim about real fraud: the models learned from the same generator they were tested on, the labels are perfect, the rules' thresholds were never tuned, and nobody is trying to evade anything. The rules still explain themselves in a sentence and can be written for a problem with no labeled examples. The full method, the per-problem results, the disagreements, and the limits are in [analysis/README.md](analysis/README.md); the dashboard's **Rules vs ML** tab shows the same saved results. No model runs in the live pipeline.
+On this simulated data the random forest is clearly better (logistic regression is not: it catches fewer incidents than the rules), mostly because it tells the planted look-alikes apart (a second coffee, an app purchase, a planned big purchase), which fixed rules can't. That is not a claim about real fraud: the models learned from the same generator they were tested on, the labels are perfect, the rules' thresholds were never tuned, and nobody is trying to evade anything. The rules still explain themselves in a sentence and can be written for a problem with no labeled examples. The full method, the per-problem results, the disagreements, and the limits are in [analysis/README.md](analysis/README.md); the dashboard's **Rules vs ML** tab shows the same saved results. No model runs in the live pipeline.
 
 ```
 analysis/generate_dataset.sh                                   # two simulated years through the real pipeline
@@ -220,9 +220,10 @@ cd analysis && python3 -m venv .venv && .venv/bin/pip install -r requirements.tx
 - **The warm-up covers 90 simulated days.** A restarted watchdog forgets a country a card last used before that.
 - **A restarted simulator needs its old messages.** It finds its place from the Kafka topic. Once Kafka has deleted those messages (7 days by default) it starts from the first day, and the watchdog skips what it already has until the replay catches up. The dashboard says so while that happens.
 - **The data is simulated.** The rates of each problem are ones I chose, labels are perfect and instant, and nobody is trying to evade the rules. Precision and recall here show the method, not real-world performance.
-- **No authentication.** Every port is bound to 127.0.0.1.
+- **No authentication.** Every port is bound to 127.0.0.1, so it's a local demo only: anything running on your machine can read the API and control the simulator.
 - **One Kafka broker, data in memory.** A demo, not a durable deployment.
-- **No load benchmark yet**, and CI hasn't run on GitHub yet.
+- **No load benchmark yet.**
+- **Demo data piles up.** Each scenario run adds a card under `demo-user`, and everything stays in memory until `docker compose down`.
 - **Rule limits** (a second price hike in a row isn't alerted, spending-spike assumes roughly normal daily totals, and others) are listed in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## What's next

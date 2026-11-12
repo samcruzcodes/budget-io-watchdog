@@ -162,11 +162,31 @@ class ControlServerTest {
                 UUID::randomUUID);
     }
 
+    @ParameterizedTest
+    @CsvSource({"pause, text/plain", "scenarios, text/plain", "scenarios, application/x-www-form-urlencoded", "pause,"})
+    void aPostThatIsNotJsonIsRefusedAndChangesNothing(String control, String contentType) throws Exception {
+        // What another website could make a browser send to localhost without permission: a form-style post.
+        HttpRequest.Builder request = HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + server.port() + "/api/simulator/" + control))
+                .POST(HttpRequest.BodyPublishers.ofString("{\"type\": \"DUPLICATE_CHARGE\"}"));
+        if (contentType != null) {
+            request.header("Content-Type", contentType);
+        }
+
+        HttpResponse<String> response = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode()).isEqualTo(415);
+        assertThat(published).isEmpty();
+        assertThat(clock.status().paused()).isFalse();
+    }
+
     private HttpResponse<String> call(String method, String control, String body) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + server.port() + "/api/simulator/" + control))
-                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body))
-                .build();
-        return http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://localhost:" + server.port() + "/api/simulator/" + control))
+                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
+        if (method.equals("POST")) {
+            request.header("Content-Type", "application/json"); // like the dashboard
+        }
+        return http.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private static String state(HttpResponse<String> response) {

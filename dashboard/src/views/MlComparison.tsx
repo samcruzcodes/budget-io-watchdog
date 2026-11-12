@@ -43,11 +43,13 @@ export function MlComparison() {
         <div className="panel-head">
           <h2 id="ml-scores">Scores on the held-out run</h2>
           <p className="panel-note">
-            <strong>Precision:</strong> of the transactions flagged, the share that belong to a planted incident.{' '}
             <strong>Incident recall:</strong> of the planted incidents, the share with at least one flagged
-            transaction, which is how the watchdog has always scored its rules. <strong>F1</strong> combines those
-            two. Transaction recall counts every labeled transaction separately; rules alert once per incident by
-            design, so it understates them. PR-AUC summarizes a model across every possible threshold.
+            transaction, which is how the watchdog has always scored its rules. <strong>Precision:</strong> incidents
+            caught, out of incidents caught plus legitimate transactions flagged, so a caught incident counts once
+            however many of its transactions were flagged. <strong>F1</strong> combines those two. The
+            per-transaction columns count every labeled transaction separately: they understate the rules, which
+            alert once per incident by design, and flatter a model that flags several charges of one incident.
+            PR-AUC summarizes a model's per-transaction scores across every possible threshold.
           </p>
         </div>
         <div className="table-scroll">
@@ -58,7 +60,8 @@ export function MlComparison() {
                 <th scope="col" className="number">Precision</th>
                 <th scope="col" className="number">Incident recall</th>
                 <th scope="col" className="number">F1</th>
-                <th scope="col" className="number">Transaction recall</th>
+                <th scope="col" className="number">Per-transaction precision</th>
+                <th scope="col" className="number">Per-transaction recall</th>
                 <th scope="col" className="number">PR-AUC</th>
               </tr>
             </thead>
@@ -75,6 +78,7 @@ export function MlComparison() {
                     </span>
                   </td>
                   <td className="number">{percent(model.test.incident.f1)}</td>
+                  <td className="number">{percent(model.test.transaction.precision)}</td>
                   <td className="number">{percent(model.test.transaction.recall)}</td>
                   <td className="number">{'pr_auc_test' in model ? model.pr_auc_test.toFixed(2) : 'n/a'}</td>
                 </tr>
@@ -172,8 +176,11 @@ export function MlComparison() {
         <ul className="plain-list">
           <li>
             The rules lose most of their precision on the planted look-alikes, which they can't tell apart by design,
-            and miss spending spikes their fixed three-standard-deviation line doesn't reach. A model sees the same
-            history and learns where to draw each line from labeled examples.
+            and miss spending spikes their fixed three-standard-deviation line doesn't reach. The forest sees the same
+            history and learns where to draw each line from labeled examples. Logistic regression doesn't manage
+            that: conditions like "the same amount again" aren't something a straight line can express, and it
+            catches fewer incidents than the rules do. An exact rule is still hard to beat at the exact thing it
+            checks, as the duplicate-charge row shows.
           </li>
           <li>
             The data is simulated. The models were trained on the output of the same generator they were tested on,

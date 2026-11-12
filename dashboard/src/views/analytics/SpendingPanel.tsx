@@ -4,6 +4,7 @@ import { HorizontalBars } from '../../charts/HorizontalBars';
 import { Empty, ErrorState, Loading } from '../../components/States';
 import { UserPicker } from '../../components/UserPicker';
 import { money } from '../../format';
+import { firstRealUser } from '../../scenarios';
 import { usePolling } from '../../usePolling';
 
 // The newest simulated month keeps growing while the simulator runs, so the month shown is reloaded.
@@ -36,7 +37,7 @@ export function SpendingPanel() {
 }
 
 function SpendingFor({ users }: { users: UserSummary[] }) {
-  const [user, setUser] = useState(users[0].userId);
+  const [user, setUser] = useState(firstRealUser(users).userId);
   const newest = users.find((u) => u.userId === user)?.newestOccurredAt ?? users[0].newestOccurredAt;
   const [month, setMonth] = useState(newest.slice(0, 7)); // the user's newest simulated month, YYYY-MM
   const summary = usePolling(() => api.spendingSummary(user, month), SPENDING_EVERY_MS, [user, month]);

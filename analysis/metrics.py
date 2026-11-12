@@ -9,8 +9,15 @@ Two views of the same predictions:
     always scored its rules, and it's what matters to a cardholder: one alert per problem is enough.
 
 Rules are built to alert once per incident, so transaction-level recall undercounts them (four of a card-testing
-run's five charges are "missed" by design). The headline comparison therefore uses alert precision with incident
-recall, and the transaction-level numbers are reported beside it.
+run's five charges are "missed" by design). The same difference would flatter a model's precision if true positives
+were counted per transaction: a model that flags all five charges of one card-testing run would get five true
+positives for one caught problem, against one for a rule. So the headline comparison counts each caught incident
+once on both sides:
+
+    incident precision = incidents caught / (incidents caught + legitimate transactions flagged)
+    incident recall    = incidents caught / incidents planted
+
+The transaction-level numbers are reported beside it.
 """
 
 import numpy as np
@@ -54,8 +61,9 @@ def score(frame: pd.DataFrame, flagged) -> dict:
     return {
         "confusion": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
         "transaction": {"precision": precision, "recall": recall, "f1": _f1(precision, recall)},
-        "incident": {"precision": precision, "recall": incident_recall, "f1": _f1(precision, incident_recall),
-                     "incidents": int(len(caught)), "caught": int(caught.sum())},
+        "incident": {"precision": (incident_precision := _ratio(caught.sum(), caught.sum() + fp)),
+                     "recall": incident_recall, "f1": _f1(incident_precision, incident_recall),
+                     "incidents": int(len(caught)), "caught": int(caught.sum()), "false_alarms": fp},
         "recall_by_issue_type": by_type,
         "false_positives_by_kind": false_positives,
     }
