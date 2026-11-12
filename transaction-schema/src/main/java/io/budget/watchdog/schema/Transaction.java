@@ -30,6 +30,13 @@ public record Transaction(
 
     public static final int SCHEMA_VERSION = 1;
 
+    /**
+     * The {@code source} of a transaction someone triggered on purpose from the dashboard's Scenarios tab. It goes
+     * through the same pipeline and rules as any other, but scoring leaves it out, so a demo can't change precision
+     * or recall.
+     */
+    public static final String DEMO_SOURCE = "DEMO";
+
     private static final Pattern CURRENCY_CODE = Pattern.compile("[A-Z]{3}"); // ISO 4217, e.g. USD
     private static final Pattern COUNTRY_CODE = Pattern.compile("[A-Z]{2}");  // ISO 3166-1 alpha-2, e.g. US
 

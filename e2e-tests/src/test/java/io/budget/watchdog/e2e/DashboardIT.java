@@ -40,7 +40,7 @@ class DashboardIT {
     private static final String BASE_URL = System.getProperty("e2e.baseUrl", "http://localhost:8083");
     private static final Dimension DESKTOP = new Dimension(1280, 900);
     private static final Dimension PHONE = new Dimension(390, 844);
-    private static final List<String> VIEWS = List.of("overview", "feed", "alerts", "analytics", "recurring");
+    private static final List<String> VIEWS = List.of("overview", "feed", "alerts", "analytics", "recurring", "scenarios");
 
     private static WebDriver browser;
     private static WebDriverWait wait;

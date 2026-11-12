@@ -17,7 +17,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 | 2 | Six detection rules, with unit tests (hits are logged until Phase 3) | Done |
 | 3 | Alerts, detection metrics (precision and recall), a REST API, integration and API tests | Done |
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | The cluster and its demos (3.5a) are done; rule memory across pods (3.5b) is a documented limit, not built |
-| 4 | Dashboard, with a Selenium end-to-end test | Done: five views, simulator controls (pause, resume, speed, pausing itself), and browser tests. Focus mode and on-demand scenarios weren't built |
+| 4 | Dashboard, with a Selenium end-to-end test | Done: six views, simulator controls (pause, resume, speed, pausing itself), scenarios on demand, and browser tests. Focus mode wasn't built |
 | 5 | CI with GitHub Actions, and benchmark results in the README | CI is written (not yet run on GitHub); the benchmark is planned |
 | 6 | Data science: compare the rules with an ML model | Planned |
 
@@ -232,6 +232,7 @@ The simulator reads environment variables, with defaults that work for a local r
 | `SIM_RESUME` | `true` (default) | After a restart, continue where the topic ends instead of publishing from the first day again. |
 | `SIM_START_PAUSED` | `false` (default) | Start with the clock paused, until someone resumes it. |
 | `SIM_CONTROL_PORT` | `8090` (default) | Where the control API listens. |
+| `SIM_SCENARIOS_ENABLED` | `true` | Let the control API publish demo scenarios on request. Off by default. |
 | `SIM_RATE_*` | turned up | One rate per issue and look-alike. The unit is per card purchase, per renewal, per morning coffee, a share of free trials, or per user per day, depending on the rate. |
 | `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Where to publish. |
 
@@ -924,7 +925,57 @@ A sound fix isn't small. Each of the six rules would need a way to forget one ca
 
 ### Not built from the 4c plan
 
-Focus mode (filter every view to one user), triggering a scenario on demand, the label schema change that goes with it, and Kafka retention limits. Retention limits would also shorten how long a restarted simulator can find its place, which is one more reason to prefer a compacted checkpoint if they're added.
+Focus mode (filter every view to one user) and Kafka retention limits. Scenarios on demand were built later, differently from the plan (next section). Retention limits would also shorten how long a restarted simulator can find its place, which is one more reason to prefer a compacted checkpoint if they're added.
+
+## Scenarios on demand
+
+Built 2026-11-11. The dashboard's Scenarios tab triggers one scenario per rule, so someone watching can cause a problem and see the system catch it.
+
+### The path
+
+`POST /api/simulator/scenarios {"type": "DUPLICATE_CHARGE"}` (through nginx) makes the simulator plan one run and publish its transactions and labels to Kafka with the same producer as the seeded stream. The answer lists what was sent: a scenario ID, the card, and each transaction's ID. The watchdog consumes those messages like any others. The tab then polls `GET /api/scenarios/{scenarioId}` on the watchdog until every transaction it was told about is stored, and shows the alerts raised on them. A transaction's alerts commit in the same database transaction as the charge, so once all are stored the alerts are final. After 20 seconds it gives up and says how many arrived.
+
+Nothing in the dashboard or the watchdog can create a transaction or an alert over HTTP. If a rule doesn't fire, the tab reports "Not detected".
+
+### What a run is
+
+`DemoScenarios` holds one fixed script per rule, written against the rule's conditions at its default thresholds:
+
+| Scenario | What's sent | Why the rule fires |
+|---|---|---|
+| Card testing | 4 charges of $0.50 to $1.99 at different merchants over 11 minutes, then $489.00 | 3 or more charges of $2.00 or less in the hour before a charge of $100 or more |
+| Duplicate charge | $64.27 at one merchant, and again 24 seconds later | same merchant and amount within 10 minutes |
+| New country | 22 daily charges at home, then $812.40 in France | a new country after the card's first 20 charges, with no travel purchase in 30 days |
+| Price hike | $15.49 sixty and thirty days ago, then $18.49 | two charges about a month apart at one price, then more than 1% higher |
+| Spending spike | 16 dining days of $22 to $39, then three orders today totalling $213.90 | today's dining total is at least $50 and 3 standard deviations above the usual day, with 14 or more earlier days |
+| Trial conversion | $0.00 fourteen days ago, then $10.99 at the same merchant | a charge of $1.00 or less, then at least 5 times as much 5 to 45 days later |
+
+- **History is sent too, dated in the past.** The rules only look at event time, and one card's messages share a partition, so they arrive in order. The suspicious part is dated at the simulator's current simulated moment. It publishes at once and works while the simulator is paused.
+- **A new card per run** (`demo-` plus the first 8 characters of the scenario ID, user `demo-user`). Rule memory is per card, so runs can't affect each other or the seeded users, and each starts from the same clean state.
+- **IDs come from a random scenario ID**, and each transaction ID is name-based from it. Random on purpose: a run happens when a person clicks, so it was never part of the repeatable stream, and a counter would start over when the simulator restarts and repeat IDs the watchdog has stored. The seeded simulation draws nothing from it, so the same seed still gives the same run.
+- **The spending spike stays inside one UTC day.** The rule adds up each day, so today's three orders are never dated before midnight, even when "now" is just after it.
+
+### Finding a run again, and keeping it out of the scores
+
+| Question | What's built | Alternatives | Why |
+|---|---|---|---|
+| How the dashboard finds a run's transactions | the scenario ID in each ground-truth label, read by `ScenarioResults` in the `evaluation` package | match by card or by time; a new field on the transaction | the label already groups a scenario's transactions, and only evaluation code may read labels, so the rules still can't see it |
+| How demo data is told apart | `source = DEMO` on the transaction and `persona = DEMO` on the label | a new `manual` field and a label schema v2 (the 4c plan) | `source` already means "where this came from", and no schema version or dual parsing is needed |
+| Precision and recall | `DetectionMetrics` leaves out `source = DEMO` in both queries | count them; a separate "caught X of Y" line | a demo run is built to be caught on a quiet card, so counting it would flatter both numbers |
+| Who may trigger one | off unless `SIM_SCENARIOS_ENABLED=true`; the control port isn't published and nginx listens on 127.0.0.1 | authentication | the rest of the API has none either; this keeps it to a local demo |
+
+The totals on the Overview (transactions processed, alerts raised) count everything stored, demo runs included, so they can be higher than the per-rule alert counts, which leave demo runs out. The detection table says so.
+
+Migration V5 adds an index on `ground_truth_labels (scenario_id)` for the lookup.
+
+### Testing
+
+- **Simulator:** `DemoScenariosTest` (each run is one card's story in time order, marked as demo, carrying its scenario ID; 50 reruns share no ID; the spike stays in one day; the runner works while paused and refuses when turned off) and `ControlServerTest` (the endpoints over HTTP: the list, a run, bad requests, and 403 when off).
+- **Watchdog:** `ScenariosApiIT` sends a demo pair and its labels through real Kafka and finds it by scenario ID with the alert the rules raised; `DetectionMetricsIT` checks demo data changes no score.
+- **Dashboard:** the verdict logic (running, detected, not detected, incomplete) and the links, in Vitest.
+- **Against the running stack** (`ScenariosIT`, with `-Pe2e`): all six scenarios each make exactly their own rule fire once with the expected explanation; a rerun uses new IDs and is detected again; the tab runs a scenario, shows the verdict and the alert, and links to it in Alerts; a scenario's transaction shows in the Live feed.
+
+The scripts live in the simulator and the rules in the watchdog, so only that last test proves a script really meets its rule's conditions. If a threshold is changed in `application.yml`, a scenario may stop firing, and the tab will say "Not detected".
 
 ## Planned work
 
@@ -946,7 +997,6 @@ My plan: measure the gap first, by running the same seed with 1 pod and with 3 a
 ### Phase 4: what's left
 
 - **Focus mode:** a user picker in the header that filters every view to one user.
-- **Scenarios on demand:** trigger card testing, a duplicate, a binge, or a foreign charge from the dashboard for a live demo, labeled as manual so the headline metrics only count the seeded run.
 - **Kafka retention limits** on every topic.
 
 ### Phase 5: CI and benchmark

@@ -2,7 +2,9 @@ package io.budget.watchdog.simulator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.budget.watchdog.schema.IssueType;
 import io.budget.watchdog.schema.MessageJson;
+import io.budget.watchdog.schema.Transaction;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -10,6 +12,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,12 +28,13 @@ class ControlServerTest {
 
     private final SimClock clock = new SimClock(SIM_START, 30, InstantSource.system(), false);
     private final HttpClient http = HttpClient.newHttpClient();
+    private final List<Transaction> published = new CopyOnWriteArrayList<>(); // filled by the server's thread
     private ControlServer server;
 
     @BeforeEach
     void start() throws IOException {
         // port 0: any free port. The run: 42 published so far, continuing an earlier run, pausing every 365 days.
-        server = new ControlServer(0, clock, () -> new SimulatorRunner.Progress(42, SIM_START, 365, false));
+        server = new ControlServer(0, clock, () -> new SimulatorRunner.Progress(42, SIM_START, 365, false), demos(true));
         server.start();
     }
 
@@ -93,6 +99,67 @@ class ControlServerTest {
         assertThat(call("POST", "status", null).statusCode()).isEqualTo(405);
         assertThat(call("POST", "rewind", null).statusCode()).isEqualTo(404);
         assertThat(clock.status().paused()).isFalse();
+    }
+
+    @Test
+    void scenariosListsWhatCanBeRun() throws Exception {
+        HttpResponse<String> response = call("GET", "scenarios", null);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        ControlServer.ScenariosResponse scenarios = MessageJson.read(response.body(), ControlServer.ScenariosResponse.class);
+        assertThat(scenarios.enabled()).isTrue();
+        assertThat(scenarios.types()).containsExactlyElementsOf(DemoScenarios.TYPES);
+    }
+
+    @Test
+    void runningAScenarioPublishesItAndAnswersWithTheRun() throws Exception {
+        HttpResponse<String> response = call("POST", "scenarios", "{\"type\": \"DUPLICATE_CHARGE\"}");
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        DemoScenarios.Run run = MessageJson.read(response.body(), DemoScenarios.Run.class);
+        assertThat(run.type()).isEqualTo(IssueType.DUPLICATE_CHARGE);
+        assertThat(run.expectedDetector()).isEqualTo("duplicate-charge");
+        assertThat(run.steps()).hasSize(2);
+        // What the answer lists is exactly what went to Kafka, in order, on the run's own card.
+        assertThat(published).extracting(Transaction::transactionId)
+                .containsExactlyElementsOf(run.steps().stream().map(DemoScenarios.Step::transactionId).toList());
+        assertThat(published).allSatisfy(tx -> {
+            assertThat(tx.cardId()).isEqualTo(run.cardId());
+            assertThat(tx.source()).isEqualTo(Transaction.DEMO_SOURCE);
+        });
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "{\"type\": \"NONE\"}",
+            "{\"type\": \"MONEY_LAUNDERING\"}",
+            "{}",
+            "not json"})
+    void aBadScenarioRequestIsA400AndPublishesNothing(String body) throws Exception {
+        HttpResponse<String> response = call("POST", "scenarios", body);
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.body()).contains("CARD_TESTING");
+        assertThat(published).isEmpty();
+    }
+
+    @Test
+    void scenariosAreRefusedUnlessTurnedOn() throws Exception {
+        server.stop();
+        server = new ControlServer(0, clock, () -> new SimulatorRunner.Progress(0, null, 0, false), demos(false));
+        server.start();
+
+        assertThat(MessageJson.read(call("GET", "scenarios", null).body(), ControlServer.ScenariosResponse.class).enabled())
+                .isFalse();
+        HttpResponse<String> response = call("POST", "scenarios", "{\"type\": \"DUPLICATE_CHARGE\"}");
+        assertThat(response.statusCode()).isEqualTo(403);
+        assertThat(response.body()).contains("SIM_SCENARIOS_ENABLED");
+        assertThat(published).isEmpty();
+    }
+
+    private DemoRunner demos(boolean enabled) {
+        return new DemoRunner(enabled, clock, (transaction, label) -> published.add(transaction), InstantSource.system(),
+                UUID::randomUUID);
     }
 
     private HttpResponse<String> call(String method, String control, String body) throws Exception {

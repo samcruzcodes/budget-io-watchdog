@@ -3,6 +3,7 @@
 
 export interface Transaction {
   transactionId: string;
+  source: string; // SIMULATOR for the seeded run, DEMO for a scenario someone triggered
   userId: string;
   cardId: string;
   merchant: string;
@@ -95,6 +96,41 @@ export interface SimulatorStatus {
   pausedItself: boolean; // paused right now because those days ran out
 }
 
+/** Which demo scenarios the simulator offers, and whether they're turned on (SIM_SCENARIOS_ENABLED). */
+export interface ScenarioCatalog {
+  enabled: boolean;
+  types: string[]; // issue types, like DUPLICATE_CHARGE
+}
+
+/** One transaction of a scenario run, as the simulator planned and published it. */
+export interface ScenarioStep {
+  transactionId: string;
+  role: 'SETUP' | 'SUSPICIOUS'; // history the rule needs first, or part of the problem
+  occurredAt: string; // simulated time
+  merchant: string;
+  category: string;
+  amountCents: number;
+  country: string;
+  note: string;
+}
+
+/** What the simulator published for one run. `scenarioId` is how the watchdog's API finds it again. */
+export interface ScenarioRun {
+  scenarioId: string;
+  type: string;
+  userId: string;
+  cardId: string;
+  expectedDetector: string; // the rule that should fire
+  steps: ScenarioStep[];
+}
+
+/** What the watchdog has stored for a scenario, and the alerts its rules raised on it. */
+export interface ScenarioResult {
+  scenarioId: string;
+  transactions: Transaction[];
+  alerts: Alert[];
+}
+
 /** What went wrong, in words a person can act on. The API's 400s explain themselves in `detail`. */
 export class ApiError extends Error {}
 
@@ -153,5 +189,8 @@ export const api = {
     pause: () => post<SimulatorStatus>('/api/simulator/pause'),
     resume: () => post<SimulatorStatus>('/api/simulator/resume'),
     setSpeed: (daysPerMinute: number) => post<SimulatorStatus>('/api/simulator/speed', { daysPerMinute }),
+    scenarios: () => get<ScenarioCatalog>('/api/simulator/scenarios'),
+    runScenario: (type: string) => post<ScenarioRun>('/api/simulator/scenarios', { type }),
   },
+  scenarioResult: (scenarioId: string) => get<ScenarioResult>(`/api/scenarios/${scenarioId}`),
 };

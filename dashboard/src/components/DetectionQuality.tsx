@@ -18,7 +18,7 @@ export function DetectionQuality({ stats, detailed = false }: { stats: Stats; de
           means few false alarms). <strong>Recall:</strong> of the problems the simulator planted, the share the rule
           caught (high means few misses). Scored against the simulator's answer key, which the rules never see. Demo
           rates: problems are planted far more often than in real life, so these aren't real-world numbers. "n/a"
-          means there's nothing to score yet.
+          means there's nothing to score yet. Runs from the Scenarios tab aren't counted here.
         </p>
       </div>
       <div className="table-scroll">

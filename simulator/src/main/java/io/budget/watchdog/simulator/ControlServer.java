@@ -2,6 +2,7 @@ package io.budget.watchdog.simulator;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.budget.watchdog.schema.IssueType;
 import io.budget.watchdog.schema.MessageJson;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -24,6 +25,8 @@ import tools.jackson.core.JacksonException;
  *   POST /api/simulator/pause    freeze simulated time
  *   POST /api/simulator/resume   continue from the same simulated moment
  *   POST /api/simulator/speed    {"daysPerMinute": 7}, one of {@link #SPEEDS}
+ *   GET  /api/simulator/scenarios   whether demo scenarios are turned on, and which there are
+ *   POST /api/simulator/scenarios   {"type": "DUPLICATE_CHARGE"}: publish that scenario now; answers with the run
  * </pre>
  *
  * Every answer is the new status as JSON, or {@code {"status": 400, "detail": "..."}} for a bad request.
@@ -47,13 +50,20 @@ final class ControlServer {
 
     record Problem(int status, String detail) {}
 
+    record ScenarioRequest(IssueType type) {}
+
+    record ScenariosResponse(boolean enabled, List<IssueType> types) {}
+
     private final HttpServer server;
     private final SimClock clock;
     private final Supplier<SimulatorRunner.Progress> progress;
+    private final DemoRunner demos;
 
-    ControlServer(int port, SimClock clock, Supplier<SimulatorRunner.Progress> progress) throws IOException {
+    ControlServer(int port, SimClock clock, Supplier<SimulatorRunner.Progress> progress, DemoRunner demos)
+            throws IOException {
         this.clock = clock;
         this.progress = progress;
+        this.demos = demos;
         this.server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/simulator/", this::handle);
     }
@@ -91,9 +101,38 @@ final class ControlServer {
                     clock.setSpeed(speed);
                     send(exchange, 200, status());
                 }
+                case "scenarios" -> scenarios(exchange, method);
                 default -> send(exchange, 404, new Problem(404, "no such control: " + action));
             }
         }
+    }
+
+    private void scenarios(HttpExchange exchange, String method) throws IOException {
+        if (method.equals("GET")) {
+            send(exchange, 200, new ScenariosResponse(demos.enabled(), DemoScenarios.TYPES));
+            return;
+        }
+        if (!method.equals("POST")) {
+            send(exchange, 405, new Problem(405, "use GET or POST for scenarios"));
+            return;
+        }
+        if (!demos.enabled()) {
+            send(exchange, 403, new Problem(403,
+                    "Demo scenarios are turned off on this simulator. Start it with SIM_SCENARIOS_ENABLED=true."));
+            return;
+        }
+        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        IssueType type;
+        try {
+            type = MessageJson.read(body, ScenarioRequest.class).type();
+        } catch (JacksonException e) {
+            type = null;
+        }
+        if (type == null || !DemoScenarios.TYPES.contains(type)) {
+            send(exchange, 400, new Problem(400, "send {\"type\": t}, with t one of " + DemoScenarios.TYPES));
+            return;
+        }
+        send(exchange, 200, demos.run(type));
     }
 
     /** Runs {@code change} and answers with the new status, if the method is right. */

@@ -3,6 +3,7 @@ package io.budget.watchdog.simulator;
 import java.io.IOException;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.UUID;
 import org.apache.kafka.common.errors.InterruptException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,7 +44,8 @@ public final class SimulatorMain {
 
         KafkaSink sink = new KafkaSink(config.kafkaBootstrapServers(), InstantSource.system());
         SimulatorRunner runner = new SimulatorRunner(simulation, clock, sink, resumeFrom, config.pauseAfterDays());
-        ControlServer control = new ControlServer(config.controlPort(), clock, runner::progress);
+        DemoRunner demos = new DemoRunner(config.scenariosEnabled(), clock, sink, InstantSource.system(), UUID::randomUUID);
+        ControlServer control = new ControlServer(config.controlPort(), clock, runner::progress, demos);
         control.start();
         try {
             long published = runner.run(config.startDate(), config.durationDays());

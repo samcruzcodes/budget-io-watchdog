@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -135,6 +136,21 @@ public class TransactionRepository {
                 .query((RowCallbackHandler) row -> totals.put(Category.valueOf(row.getString("category")),
                         row.getLong("cents")));
         return totals;
+    }
+
+    /** The stored transactions among {@code ids}, in the order they happened (ties in arrival order). */
+    public List<Transaction> byIds(Collection<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of(); // "IN ()" isn't valid SQL
+        }
+        return jdbc.sql("""
+                        SELECT * FROM transactions
+                        WHERE transaction_id IN (:ids)
+                        ORDER BY occurred_at, processed_at, transaction_id
+                        """)
+                .param("ids", ids)
+                .query((row, n) -> toTransaction(row))
+                .list();
     }
 
     public long count() {

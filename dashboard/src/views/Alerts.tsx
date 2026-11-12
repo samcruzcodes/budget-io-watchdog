@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { RuleBadge } from '../components/RuleBadge';
 import { Empty, ErrorState, Loading, StaleNote } from '../components/States';
 import { addAlerts, emptyFeed } from '../feed';
 import { ruleName, simulatedDateTime } from '../format';
+import { useHashParams } from '../useHashView';
 import { useLiveStream } from '../LiveStream';
 import { usePolling } from '../usePolling';
 
@@ -13,17 +14,30 @@ const ALERTS_EVERY_MS = 15_000;
 
 /** Recent alerts, optionally for one rule, with the rule's own explanation. New ones arrive from the live stream. */
 export function Alerts() {
-  const [rule, setRule] = useState(''); // '' = every rule
+  // A link can open this view already narrowed down: "#alerts?user=demo-user&rule=price-hike&alert=<id>" is how the
+  // Scenarios tab points at the alert a run produced.
+  const params = useHashParams();
+  const user = params.get('user') ?? ''; // '' = everyone
+  const highlighted = params.get('alert');
+  const [rule, setRule] = useState(params.get('rule') ?? ''); // '' = every rule
   const stats = usePolling(api.stats, null); // only for the list of rule IDs
-  const listed = usePolling(() => api.alerts(ALERTS_LIMIT, rule || undefined), ALERTS_EVERY_MS, [rule]);
+  const listed = usePolling(() => api.alerts(ALERTS_LIMIT, rule || undefined, user || undefined), ALERTS_EVERY_MS, [rule, user]);
   const { feed } = useLiveStream();
 
   // What the API returned, plus anything the stream brought since, for the same rule; each alert once.
   const alerts = useMemo(() => {
     if (!listed.data) return [];
-    const live = feed.alerts.filter((alert) => !rule || alert.detector === rule);
+    const live = feed.alerts.filter(
+      (alert) => (!rule || alert.detector === rule) && (!user || alert.userId === user),
+    );
     return addAlerts({ ...emptyFeed, alerts: listed.data }, live).alerts;
-  }, [listed.data, feed.alerts, rule]);
+  }, [listed.data, feed.alerts, rule, user]);
+
+  // Bring the alert a link pointed at into view, once it's on the page.
+  const highlightedShown = highlighted !== null && alerts.some((alert) => alert.alertId === highlighted);
+  useEffect(() => {
+    if (highlightedShown) document.getElementById(`alert-${highlighted}`)?.scrollIntoView({ block: 'center' });
+  }, [highlightedShown, highlighted]);
 
   return (
     <section className="panel" aria-labelledby="alerts-title">
@@ -45,6 +59,11 @@ export function Alerts() {
             ))}
           </select>
         </div>
+        {user && (
+          <p className="toolbar-note" data-testid="alerts-user-filter">
+            Only <strong>{user}</strong>'s alerts. <a href="#alerts">Show everyone's</a>
+          </p>
+        )}
       </div>
       {listed.data && listed.error && <StaleNote message={listed.error} />}
       {listed.loading ? (
@@ -68,7 +87,12 @@ export function Alerts() {
             </thead>
             <tbody>
               {alerts.map((alert) => (
-                <tr key={alert.alertId} data-rule={alert.detector}>
+                <tr
+                  key={alert.alertId}
+                  id={`alert-${alert.alertId}`}
+                  data-rule={alert.detector}
+                  className={alert.alertId === highlighted ? 'row-highlight' : undefined}
+                >
                   <td className="nowrap" data-label="Time (simulated)">{simulatedDateTime(alert.occurredAt)}</td>
                   <td data-label="Rule">
                     <RuleBadge detector={alert.detector} />

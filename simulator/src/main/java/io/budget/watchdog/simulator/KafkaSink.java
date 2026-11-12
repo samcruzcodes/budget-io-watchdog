@@ -19,7 +19,7 @@ import org.slf4j.LoggerFactory;
  * Publishes each transaction to {@code transactions} (key: cardId) and its label to {@code transaction-labels}
  * (key: transactionId), using Kafka's plain producer API.
  */
-final class KafkaSink implements TransactionSink {
+final class KafkaSink implements TransactionSink, DemoRunner.Publisher {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaSink.class);
 
@@ -41,8 +41,13 @@ final class KafkaSink implements TransactionSink {
 
     @Override
     public void publish(PlannedTransaction planned) {
-        Transaction transaction = planned.toTransaction(realClock.instant()); // publishedAt: end-to-end latency starts now
-        GroundTruthLabel label = planned.toGroundTruth();
+        // publishedAt: end-to-end latency starts now
+        publish(planned.toTransaction(realClock.instant()), planned.toGroundTruth());
+    }
+
+    /** Also called from the control API's thread for demo scenarios; the producer is safe to share between threads. */
+    @Override
+    public void publish(Transaction transaction, GroundTruthLabel label) {
         // send() is asynchronous: it queues the message and returns. When the queue is full it blocks, which slows the
         // simulator down to what Kafka can take (backpressure).
         producer.send(new ProducerRecord<>(Topics.TRANSACTIONS, transaction.cardId(), MessageJson.write(transaction)),

@@ -23,6 +23,7 @@ class SimulatorConfigTest {
         assertThat(config.controlPort()).isEqualTo(8090);
         assertThat(config.pauseAfterDays()).as("never pauses by itself unless asked").isZero();
         assertThat(config.resume()).as("a restart continues the earlier run").isTrue();
+        assertThat(config.scenariosEnabled()).as("nobody can inject transactions unless it's turned on").isFalse();
     }
 
     @Test
@@ -60,6 +61,11 @@ class SimulatorConfigTest {
 
         assertThat(config.pauseAfterDays()).isEqualTo(365);
         assertThat(config.resume()).isFalse();
+    }
+
+    @Test
+    void demoScenariosCanBeTurnedOn() {
+        assertThat(SimulatorConfig.fromEnvironment(Map.of("SIM_SCENARIOS_ENABLED", "true")).scenariosEnabled()).isTrue();
     }
 
     @Test

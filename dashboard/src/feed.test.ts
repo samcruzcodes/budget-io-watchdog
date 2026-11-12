@@ -4,6 +4,7 @@ import { FEED_LIMIT, addAlerts, addTransactions, alertsByTransaction, emptyFeed 
 
 function tx(id: string, occurredAt: string): Transaction {
   return {
+    source: 'SIMULATOR',
     transactionId: id, userId: 'user-0001', cardId: 'card-0001', merchant: 'Blue Bottle Coffee',
     category: 'DINING', amountCents: 545, country: 'US', occurredAt, publishedAt: '2026-10-30T12:00:00Z',
   };

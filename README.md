@@ -51,7 +51,7 @@ flowchart LR
 - **Kafka:** holds every transaction, in order per card, until the watchdog reads it. If the watchdog goes down, messages wait, and it picks up where it left off.
 - **Watchdog** (Spring Boot): validates each message, stores it once even if Kafka delivers it twice, and sends anything it can't parse to a dead-letter topic. Each new transaction goes through six rules. A hit becomes an alert with a plain-English explanation, saved in the same database transaction as the charge and then published to an `alerts` topic. After a restart it replays the last 90 simulated days from Postgres, so the rules remember each card before it reads anything new.
 - **PostgreSQL:** transactions, alerts, and the answer key. Only the scoring code reads the answer key; a test fails the build if detection code mentions it.
-- **Dashboard** (React, TypeScript, Vite): Overview, Live feed, Alerts, Analytics, and Recurring, plus controls to pause, resume, and speed up the simulator.
+- **Dashboard** (React, TypeScript, Vite): Overview, Live feed, Alerts, Analytics, Recurring, and Scenarios, plus controls to pause, resume, and speed up the simulator.
 
 | Part | Built with |
 |---|---|
@@ -92,9 +92,33 @@ About five minutes, start to finish.
 4. **Alerts:** pick "Duplicate charge" in the filter and read the explanations. Each one is written by the rule that fired.
 5. **Pause and speed:** press **Pause** and the total holds still. Choose "365 days/min", press **Resume**, and a simulated year goes by in a minute.
 6. **Recurring:** each user's subscriptions and bills. Look for "Price up" with both prices, and the free trials that turned into paid plans.
-7. **Analytics:** activity per simulated day, a month of spending in Budget.io's categories, and each rule's precision and recall with the counts behind them.
-8. **Take the watchdog away:** `docker compose stop watchdog`. The badge turns to "Disconnected, retrying" while the simulator keeps publishing into Kafka. `docker compose start watchdog`: it replays recent history, reads everything that waited, and the totals catch up. Nothing is lost and nothing is stored twice.
-9. **Restart the simulator:** `docker compose restart simulator`. It finds where the run stopped and continues from there. Its log says `Continuing an earlier run from ...`.
+7. **Scenarios:** press **Pause** first for a quiet feed, then **Run scenario** on any of the six rules. The simulator publishes a short scripted set of transactions to Kafka, and a second later the tab shows what the watchdog stored and which rule fired, in the rule's own words. "See it in Alerts" jumps to the alert. More in [Scenarios](#scenarios) below.
+8. **Analytics:** activity per simulated day, a month of spending in Budget.io's categories, and each rule's precision and recall with the counts behind them.
+9. **Take the watchdog away:** `docker compose stop watchdog`. The badge turns to "Disconnected, retrying" while the simulator keeps publishing into Kafka. `docker compose start watchdog`: it replays recent history, reads everything that waited, and the totals catch up. Nothing is lost and nothing is stored twice.
+10. **Restart the simulator:** `docker compose restart simulator`. It finds where the run stopped and continues from there. Its log says `Continuing an earlier run from ...`.
+
+### Scenarios
+
+The Scenarios tab lets you trigger each kind of problem on purpose and watch the real pipeline handle it:
+
+```
+Run scenario  →  simulator  →  Kafka  →  watchdog (store, run the six rules)  →  PostgreSQL  →  the tab reads it back
+```
+
+- **What a run is.** A short, fixed script on a brand-new demo card, built to meet one rule's actual conditions. Several rules need history first (new-country wants 20 earlier charges, price-hike two steady months), and rules judge by simulated time, so a run sends that history too, dated in the past, then the suspicious part dated now.
+- **Nothing is faked.** The dashboard never creates a transaction or an alert. It asks the simulator to publish, then asks the watchdog what it stored and flagged for that run's scenario ID. If a rule doesn't fire, the tab says "Not detected".
+- **Run it as often as you like.** Every run gets a new scenario ID, a new card, and new transaction IDs, so a rerun is never skipped as "already stored" and one run can't affect another.
+- **It doesn't touch the numbers.** Demo transactions are marked (`source` is `DEMO`, the user is `demo-user`) and left out of precision and recall. The seeded simulation is unaffected: the same seed still produces the same run.
+- **Local only.** The simulator refuses scenario requests unless `SIM_SCENARIOS_ENABLED=true` (the demo preset sets it). Its control port isn't published; the only way in is through nginx on 127.0.0.1.
+
+The same thing from a terminal:
+
+```
+curl -X POST -H 'Content-Type: application/json' -d '{"type": "DUPLICATE_CHARGE"}' localhost:8083/api/simulator/scenarios
+curl localhost:8082/api/scenarios/<scenarioId from the answer>     # the stored transactions and the alerts raised
+```
+
+Types: `CARD_TESTING`, `DUPLICATE_CHARGE`, `NEW_COUNTRY`, `PRICE_HIKE`, `SPENDING_SPIKE`, `TRIAL_CONVERSION`.
 
 ### Looking underneath
 
@@ -124,10 +148,10 @@ cd dashboard && nvm use && npm ci && npm test && npm run build     # dashboard: 
 
 | Suite | Tests | What it runs against |
 |---|---|---|
-| Backend unit (`*Test`) | 245 | nothing: plain Java |
-| Backend integration (`*IT`) | 39 | real Kafka and Postgres in Docker (Testcontainers) |
-| Dashboard unit (Vitest) | 36 | plain TypeScript logic |
-| Browser (Selenium, headless Chrome) | 8 | the running Compose stack, through nginx |
+| Backend unit (`*Test`) | 270 | nothing: plain Java |
+| Backend integration (`*IT`) | 43 | real Kafka and Postgres in Docker (Testcontainers) |
+| Dashboard unit (Vitest) | 46 | plain TypeScript logic |
+| Browser and end-to-end (Selenium, headless Chrome) | 18 | the running Compose stack, through nginx |
 
 All passing on 2026-11-11. What the tests cover, by the question they answer:
 
@@ -137,6 +161,7 @@ All passing on 2026-11-11. What the tests cover, by the question they answer:
 - **Does a restarted watchdog forget everything?** No: it replays 90 simulated days from Postgres before reading Kafka.
 - **Does a restarted simulator flood the system with repeats?** No: it continues where the topic ends. An integration test restarts it against a real Kafka and checks the topic holds every transaction of an uninterrupted run, with only a few repeats at the boundary.
 - **Is each rule right?** Every rule is tested for firing, not firing, its window's edges, its look-alikes, and staying separate per card.
+- **Do the demo scenarios really trip the rules?** A test runs all six against the live stack and checks that each makes exactly its own rule fire, once, with the expected explanation, and that a rerun uses new IDs.
 - **Does the dashboard show what the backend has?** The browser tests check live rows arriving, the alert filter, pause holding the totals still, and no sideways scrolling on a phone.
 
 `.github/workflows/ci.yml` runs the backend suite, the dashboard suite, and the browser tests on every push. It hasn't run on GitHub yet.
@@ -183,7 +208,7 @@ Measured 2026-11-11. The numbers show the pipeline keeping up with what the simu
 - A benchmark with about 1,000 simulated users: maximum throughput, latency under steady load, and precision and recall over a simulated year with realistic rates.
 - Comparing the rules with a model trained on the labeled data (gradient boosting, isolation forest).
 - Rule memory that follows a partition between pods, or Kafka Streams state stores.
-- Dashboard: filter every view to one user, and trigger a scenario on demand.
+- Dashboard: filter every view to one user.
 - Real transactions through a Plaid adapter, and Budget.io reading real spending from Watchdog.
 
 ## The design in two minutes

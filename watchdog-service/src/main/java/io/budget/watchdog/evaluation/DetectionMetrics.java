@@ -2,6 +2,7 @@ package io.budget.watchdog.evaluation;
 
 import io.budget.watchdog.rules.DetectionRule;
 import io.budget.watchdog.schema.IssueType;
+import io.budget.watchdog.schema.Transaction;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,10 @@ import org.springframework.stereotype.Component;
  * Precision and recall per rule, computed on request by comparing the alerts with the labels in Postgres. It matches
  * the Python prototypes' counting except for missing labels: those alerts are reported as unlabeled instead of being
  * counted as false positives, and an empty ratio is null instead of 0.
+ *
+ * <p>Scenarios someone triggered from the dashboard ({@code source = DEMO}) are left out of every number here. They're
+ * built to be caught, on a quiet card with exactly the history the rule wants, so counting them would flatter both
+ * precision and recall.
  */
 @Component
 public class DetectionMetrics {
@@ -40,9 +45,12 @@ public class DetectionMetrics {
                                count(*) FILTER (WHERE l.transaction_id IS NULL)                             AS unlabeled,
                                count(DISTINCT l.scenario_id) FILTER (WHERE l.issue_type = a.issue_type)     AS caught
                         FROM alerts a
+                        JOIN transactions t ON t.transaction_id = a.transaction_id
                         LEFT JOIN ground_truth_labels l ON l.transaction_id = a.transaction_id
+                        WHERE t.source <> :demo
                         GROUP BY a.detector
                         """)
+                .param("demo", Transaction.DEMO_SOURCE)
                 .query((row, n) -> new AlertCounts(row.getString("detector"), row.getLong("tp"), row.getLong("fp"),
                         row.getLong("unlabeled"), row.getLong("caught")))
                 .list().stream()
@@ -54,9 +62,10 @@ public class DetectionMetrics {
                         SELECT l.issue_type, count(DISTINCT l.scenario_id) AS scenarios
                         FROM ground_truth_labels l
                         JOIN transactions t ON t.transaction_id = l.transaction_id
-                        WHERE l.issue_type <> 'NONE'
+                        WHERE l.issue_type <> 'NONE' AND t.source <> :demo
                         GROUP BY l.issue_type
                         """)
+                .param("demo", Transaction.DEMO_SOURCE)
                 .query((row, n) -> new ScenarioCount(IssueType.valueOf(row.getString("issue_type")),
                         row.getLong("scenarios")))
                 .list().stream()

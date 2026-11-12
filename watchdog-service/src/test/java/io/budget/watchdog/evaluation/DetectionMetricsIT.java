@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.budget.watchdog.IntegrationTestContainers;
 import io.budget.watchdog.schema.IssueType;
+import io.budget.watchdog.schema.Transaction;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -89,16 +90,46 @@ class DetectionMetricsIT {
                 0, 0, 0, 0, 0, 0, 0, null, null));
     }
 
+    @Test
+    void scenariosTriggeredFromTheDashboardAreLeftOutOfEveryScore() {
+        // One seeded duplicate, caught.
+        UUID seeded = UUID.randomUUID();
+        storedWithLabel(IssueType.NONE, seeded, null);
+        alert(storedWithLabel(IssueType.DUPLICATE_CHARGE, seeded, null), "duplicate-charge", IssueType.DUPLICATE_CHARGE);
+
+        // Two demo runs: one caught, one missed, plus a stray alert on a demo original. None of it may count.
+        UUID caughtDemo = UUID.randomUUID();
+        UUID demoOriginal = stored(Transaction.DEMO_SOURCE);
+        label(demoOriginal, IssueType.NONE, caughtDemo, null);
+        UUID demoDuplicate = stored(Transaction.DEMO_SOURCE);
+        label(demoDuplicate, IssueType.DUPLICATE_CHARGE, caughtDemo, null);
+        alert(demoDuplicate, "duplicate-charge", IssueType.DUPLICATE_CHARGE);
+        alert(demoOriginal, "duplicate-charge", IssueType.DUPLICATE_CHARGE);
+        UUID missedDemo = stored(Transaction.DEMO_SOURCE);
+        label(missedDemo, IssueType.CARD_TESTING, UUID.randomUUID(), null);
+
+        List<RuleScore> scores = metrics.scores();
+
+        assertThat(scores.get(1)).isEqualTo(new RuleScore("duplicate-charge", IssueType.DUPLICATE_CHARGE,
+                1, 1, 0, 0, 1, 1, 0, 1.0, 1.0));
+        assertThat(scores.getFirst()).isEqualTo(new RuleScore("card-testing", IssueType.CARD_TESTING,
+                0, 0, 0, 0, 0, 0, 0, null, null));
+    }
+
     private UUID stored() {
+        return stored("SIMULATOR");
+    }
+
+    private UUID stored(String source) {
         UUID id = UUID.randomUUID();
         jdbc.sql("""
                         INSERT INTO transactions (transaction_id, source, user_id, card_id, merchant, category,
                                                   amount_cents, currency, country, occurred_at, published_at,
                                                   processed_at)
-                        VALUES (:id, 'SIMULATOR', 'user-0001', 'card-0001', 'Blue Bottle Coffee', 'DINING', 545,
+                        VALUES (:id, :source, 'user-0001', 'card-0001', 'Blue Bottle Coffee', 'DINING', 545,
                                 'USD', 'US', :time, :time, :time)
                         """)
-                .param("id", id).param("time", TIME).update();
+                .param("id", id).param("source", source).param("time", TIME).update();
         return id;
     }
 

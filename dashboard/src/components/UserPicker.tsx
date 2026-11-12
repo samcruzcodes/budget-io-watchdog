@@ -13,7 +13,7 @@ export function UserPicker({ id, users, value, onChange }: {
       <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
         {users.map((user) => (
           <option key={user.userId} value={user.userId}>
-            {user.userId} ({user.cardIds.join(', ')})
+            {user.userId} ({user.cardIds.length > 3 ? `${user.cardIds.length} cards` : user.cardIds.join(', ')})
           </option>
         ))}
       </select>

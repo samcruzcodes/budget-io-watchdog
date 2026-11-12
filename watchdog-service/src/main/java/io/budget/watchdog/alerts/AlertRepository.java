@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -80,6 +81,21 @@ public class AlertRepository {
                 .param("userId", userId)
                 .param("detector", detector)
                 .param("limit", limit)
+                .query(AlertRepository::toAlert)
+                .list();
+    }
+
+    /** Every alert raised on any of these transactions, in the order the transactions happened. */
+    public List<Alert> forTransactions(Collection<UUID> transactionIds) {
+        if (transactionIds.isEmpty()) {
+            return List.of(); // "IN ()" isn't valid SQL
+        }
+        return jdbc.sql("""
+                        SELECT * FROM alerts
+                        WHERE transaction_id IN (:ids)
+                        ORDER BY occurred_at, detector
+                        """)
+                .param("ids", transactionIds)
                 .query(AlertRepository::toAlert)
                 .list();
     }

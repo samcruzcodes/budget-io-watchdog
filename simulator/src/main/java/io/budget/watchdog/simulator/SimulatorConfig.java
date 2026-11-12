@@ -20,6 +20,8 @@ import java.util.Map;
  *                             0 never pauses
  * @param resume               continue where an earlier simulator process stopped (see {@link ResumePoint}) instead
  *                             of publishing everything again from the start date
+ * @param scenariosEnabled     let the control API publish demo scenarios on request (see {@link DemoRunner}); off
+ *                             unless asked for, because it lets a caller inject transactions
  */
 record SimulatorConfig(
         long seed,
@@ -34,7 +36,8 @@ record SimulatorConfig(
         boolean startPaused,
         int controlPort,
         int pauseAfterDays,
-        boolean resume) {
+        boolean resume,
+        boolean scenariosEnabled) {
 
     /** How often each scenario happens. Each rate is a probability; the comment gives what it applies to. */
     record Rates(
@@ -108,7 +111,8 @@ record SimulatorConfig(
                 parseBoolean(get(env, "SIM_START_PAUSED", "false"), "SIM_START_PAUSED"),
                 Integer.parseInt(get(env, "SIM_CONTROL_PORT", "8090")),
                 Integer.parseInt(get(env, "SIM_PAUSE_AFTER_DAYS", "0")),
-                parseBoolean(get(env, "SIM_RESUME", "true"), "SIM_RESUME"));
+                parseBoolean(get(env, "SIM_RESUME", "true"), "SIM_RESUME"),
+                parseBoolean(get(env, "SIM_SCENARIOS_ENABLED", "false"), "SIM_SCENARIOS_ENABLED"));
     }
 
     private static boolean parseBoolean(String value, String name) {
