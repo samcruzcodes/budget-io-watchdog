@@ -1,0 +1,1342 @@
+{
+  "about": "Offline experiment on simulated data. The rules' flags are the alerts the Java rule engine raised on these transactions; the models were trained in Python afterwards. Nothing here runs in the live pipeline.",
+  "seeds": {
+    "train_and_validation": 101,
+    "test": 202
+  },
+  "features": [
+    "amount",
+    "hour",
+    "card_prior_tx",
+    "amount_vs_card_mean",
+    "country_is_new",
+    "days_since_travel",
+    "small_charges_60m",
+    "tx_60m",
+    "tx_24h",
+    "secs_since_identical",
+    "merchant_prior_tx",
+    "days_since_merchant",
+    "last_amount_at_merchant",
+    "amount_vs_last_at_merchant",
+    "prev_gap_days_at_merchant",
+    "prev_two_amounts_equal",
+    "cat_day_total",
+    "cat_prior_days",
+    "cat_day_vs_usual",
+    "cat_day_z",
+    "category"
+  ],
+  "datasets": {
+    "train": {
+      "transactions": 196723,
+      "cards": 225,
+      "issue_transactions": 5365,
+      "legitimate_transactions": 191358,
+      "issue_share": 0.0273,
+      "incidents": 2160,
+      "incidents_by_type": {
+        "CARD_TESTING": 285,
+        "DUPLICATE_CHARGE": 271,
+        "NEW_COUNTRY": 303,
+        "PRICE_HIKE": 392,
+        "SPENDING_SPIKE": 567,
+        "TRIAL_CONVERSION": 342
+      },
+      "issue_transactions_by_type": {
+        "CARD_TESTING": 1413,
+        "DUPLICATE_CHARGE": 271,
+        "NEW_COUNTRY": 303,
+        "PRICE_HIKE": 392,
+        "SPENDING_SPIKE": 2644,
+        "TRIAL_CONVERSION": 342
+      },
+      "look_alike_transactions": {
+        "APP_STORE_PURCHASES": 1185,
+        "CANCELLED_TRIAL": 568,
+        "DOUBLE_COFFEE": 916,
+        "FOREIGN_ONLINE_ORDER": 296,
+        "LEGIT_BIG_PURCHASE": 593,
+        "LEGIT_TRAVEL": 6295,
+        "TOLL_ROAD_TRIP": 1499
+      }
+    },
+    "validation": {
+      "transactions": 61892,
+      "cards": 75,
+      "issue_transactions": 1819,
+      "legitimate_transactions": 60073,
+      "issue_share": 0.0294,
+      "incidents": 707,
+      "incidents_by_type": {
+        "CARD_TESTING": 90,
+        "DUPLICATE_CHARGE": 94,
+        "NEW_COUNTRY": 116,
+        "PRICE_HIKE": 106,
+        "SPENDING_SPIKE": 203,
+        "TRIAL_CONVERSION": 98
+      },
+      "issue_transactions_by_type": {
+        "CARD_TESTING": 456,
+        "DUPLICATE_CHARGE": 94,
+        "NEW_COUNTRY": 116,
+        "PRICE_HIKE": 106,
+        "SPENDING_SPIKE": 949,
+        "TRIAL_CONVERSION": 98
+      },
+      "look_alike_transactions": {
+        "APP_STORE_PURCHASES": 428,
+        "CANCELLED_TRIAL": 164,
+        "DOUBLE_COFFEE": 346,
+        "FOREIGN_ONLINE_ORDER": 107,
+        "LEGIT_BIG_PURCHASE": 199,
+        "LEGIT_TRAVEL": 1828,
+        "TOLL_ROAD_TRIP": 480
+      }
+    },
+    "test": {
+      "transactions": 258705,
+      "cards": 300,
+      "issue_transactions": 7136,
+      "legitimate_transactions": 251569,
+      "issue_share": 0.0276,
+      "incidents": 2903,
+      "incidents_by_type": {
+        "CARD_TESTING": 365,
+        "DUPLICATE_CHARGE": 360,
+        "NEW_COUNTRY": 411,
+        "PRICE_HIKE": 563,
+        "SPENDING_SPIKE": 757,
+        "TRIAL_CONVERSION": 447
+      },
+      "issue_transactions_by_type": {
+        "CARD_TESTING": 1818,
+        "DUPLICATE_CHARGE": 360,
+        "NEW_COUNTRY": 411,
+        "PRICE_HIKE": 563,
+        "SPENDING_SPIKE": 3537,
+        "TRIAL_CONVERSION": 447
+      },
+      "look_alike_transactions": {
+        "APP_STORE_PURCHASES": 1561,
+        "CANCELLED_TRIAL": 737,
+        "DOUBLE_COFFEE": 1208,
+        "FOREIGN_ONLINE_ORDER": 371,
+        "LEGIT_BIG_PURCHASE": 759,
+        "LEGIT_TRAVEL": 8321,
+        "TOLL_ROAD_TRIP": 1820
+      }
+    }
+  },
+  "label_alignment_test": {
+    "CARD_TESTING": {
+      "incidents": 365,
+      "labeled_transactions": 1818,
+      "labeled_per_incident": 4.9808,
+      "rule_alerts_on_labeled": 364
+    },
+    "DUPLICATE_CHARGE": {
+      "incidents": 360,
+      "labeled_transactions": 360,
+      "labeled_per_incident": 1.0,
+      "rule_alerts_on_labeled": 360
+    },
+    "NEW_COUNTRY": {
+      "incidents": 411,
+      "labeled_transactions": 411,
+      "labeled_per_incident": 1.0,
+      "rule_alerts_on_labeled": 364
+    },
+    "PRICE_HIKE": {
+      "incidents": 563,
+      "labeled_transactions": 563,
+      "labeled_per_incident": 1.0,
+      "rule_alerts_on_labeled": 484
+    },
+    "SPENDING_SPIKE": {
+      "incidents": 757,
+      "labeled_transactions": 3537,
+      "labeled_per_incident": 4.6724,
+      "rule_alerts_on_labeled": 445
+    },
+    "TRIAL_CONVERSION": {
+      "incidents": 447,
+      "labeled_transactions": 447,
+      "labeled_per_incident": 1.0,
+      "rule_alerts_on_labeled": 447
+    }
+  },
+  "models": {
+    "rules": {
+      "name": "Six rules (Java)",
+      "validation": {
+        "confusion": {
+          "tp": 600,
+          "fp": 905,
+          "fn": 1219,
+          "tn": 59168
+        },
+        "transaction": {
+          "precision": 0.3987,
+          "recall": 0.3299,
+          "f1": 0.361
+        },
+        "incident": {
+          "precision": 0.3987,
+          "recall": 0.8487,
+          "f1": 0.5425,
+          "incidents": 707,
+          "caught": 600
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 90,
+            "caught": 90,
+            "recall": 1.0
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 94,
+            "caught": 94,
+            "recall": 1.0
+          },
+          "NEW_COUNTRY": {
+            "incidents": 116,
+            "caught": 105,
+            "recall": 0.9052
+          },
+          "PRICE_HIKE": {
+            "incidents": 106,
+            "caught": 94,
+            "recall": 0.8868
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 203,
+            "caught": 119,
+            "recall": 0.5862
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 98,
+            "caught": 98,
+            "recall": 1.0
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 428,
+            "flagged": 182
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 164,
+            "flagged": 0
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 346,
+            "flagged": 173
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 107,
+            "flagged": 83
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 199,
+            "flagged": 121
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 1828,
+            "flagged": 26
+          },
+          "ORDINARY": {
+            "transactions": 56521,
+            "flagged": 225
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 480,
+            "flagged": 95
+          }
+        }
+      },
+      "test": {
+        "confusion": {
+          "tp": 2464,
+          "fp": 3450,
+          "fn": 4672,
+          "tn": 248119
+        },
+        "transaction": {
+          "precision": 0.4166,
+          "recall": 0.3453,
+          "f1": 0.3776
+        },
+        "incident": {
+          "precision": 0.4166,
+          "recall": 0.8488,
+          "f1": 0.5589,
+          "incidents": 2903,
+          "caught": 2464
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 365,
+            "caught": 364,
+            "recall": 0.9973
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 360,
+            "caught": 360,
+            "recall": 1.0
+          },
+          "NEW_COUNTRY": {
+            "incidents": 411,
+            "caught": 364,
+            "recall": 0.8856
+          },
+          "PRICE_HIKE": {
+            "incidents": 563,
+            "caught": 484,
+            "recall": 0.8597
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 757,
+            "caught": 445,
+            "recall": 0.5878
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 447,
+            "caught": 447,
+            "recall": 1.0
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 1561,
+            "flagged": 650
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 737,
+            "flagged": 0
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 1208,
+            "flagged": 604
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 371,
+            "flagged": 296
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 759,
+            "flagged": 470
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 8321,
+            "flagged": 147
+          },
+          "ORDINARY": {
+            "transactions": 236792,
+            "flagged": 913
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 1820,
+            "flagged": 370
+          }
+        }
+      }
+    },
+    "logistic_regression": {
+      "name": "Logistic regression",
+      "threshold": 0.9159,
+      "pr_auc_validation": 0.6408,
+      "validation": {
+        "confusion": {
+          "tp": 1272,
+          "fp": 714,
+          "fn": 547,
+          "tn": 59359
+        },
+        "transaction": {
+          "precision": 0.6405,
+          "recall": 0.6993,
+          "f1": 0.6686
+        },
+        "incident": {
+          "precision": 0.6405,
+          "recall": 0.8741,
+          "f1": 0.7393,
+          "incidents": 707,
+          "caught": 618
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 90,
+            "caught": 90,
+            "recall": 1.0
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 94,
+            "caught": 84,
+            "recall": 0.8936
+          },
+          "NEW_COUNTRY": {
+            "incidents": 116,
+            "caught": 109,
+            "recall": 0.9397
+          },
+          "PRICE_HIKE": {
+            "incidents": 106,
+            "caught": 71,
+            "recall": 0.6698
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 203,
+            "caught": 176,
+            "recall": 0.867
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 98,
+            "caught": 88,
+            "recall": 0.898
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 428,
+            "flagged": 37
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 164,
+            "flagged": 11
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 346,
+            "flagged": 173
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 107,
+            "flagged": 8
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 199,
+            "flagged": 144
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 1828,
+            "flagged": 13
+          },
+          "ORDINARY": {
+            "transactions": 56521,
+            "flagged": 325
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 480,
+            "flagged": 3
+          }
+        }
+      },
+      "pr_auc_test": 0.6334,
+      "test": {
+        "confusion": {
+          "tp": 4919,
+          "fp": 2873,
+          "fn": 2217,
+          "tn": 248696
+        },
+        "transaction": {
+          "precision": 0.6313,
+          "recall": 0.6893,
+          "f1": 0.659
+        },
+        "incident": {
+          "precision": 0.6313,
+          "recall": 0.835,
+          "f1": 0.719,
+          "incidents": 2903,
+          "caught": 2424
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 365,
+            "caught": 365,
+            "recall": 1.0
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 360,
+            "caught": 305,
+            "recall": 0.8472
+          },
+          "NEW_COUNTRY": {
+            "incidents": 411,
+            "caught": 375,
+            "recall": 0.9124
+          },
+          "PRICE_HIKE": {
+            "incidents": 563,
+            "caught": 363,
+            "recall": 0.6448
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 757,
+            "caught": 633,
+            "recall": 0.8362
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 447,
+            "caught": 383,
+            "recall": 0.8568
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 1561,
+            "flagged": 194
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 737,
+            "flagged": 40
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 1208,
+            "flagged": 604
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 371,
+            "flagged": 35
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 759,
+            "flagged": 572
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 8321,
+            "flagged": 75
+          },
+          "ORDINARY": {
+            "transactions": 236792,
+            "flagged": 1339
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 1820,
+            "flagged": 14
+          }
+        }
+      }
+    },
+    "random_forest": {
+      "name": "Random forest",
+      "threshold": 0.5909,
+      "pr_auc_validation": 0.9034,
+      "validation": {
+        "confusion": {
+          "tp": 1434,
+          "fp": 87,
+          "fn": 385,
+          "tn": 59986
+        },
+        "transaction": {
+          "precision": 0.9428,
+          "recall": 0.7883,
+          "f1": 0.8587
+        },
+        "incident": {
+          "precision": 0.9428,
+          "recall": 0.9661,
+          "f1": 0.9543,
+          "incidents": 707,
+          "caught": 683
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 90,
+            "caught": 90,
+            "recall": 1.0
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 94,
+            "caught": 83,
+            "recall": 0.883
+          },
+          "NEW_COUNTRY": {
+            "incidents": 116,
+            "caught": 111,
+            "recall": 0.9569
+          },
+          "PRICE_HIKE": {
+            "incidents": 106,
+            "caught": 105,
+            "recall": 0.9906
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 203,
+            "caught": 196,
+            "recall": 0.9655
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 98,
+            "caught": 98,
+            "recall": 1.0
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 428,
+            "flagged": 0
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 164,
+            "flagged": 0
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 346,
+            "flagged": 13
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 107,
+            "flagged": 3
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 199,
+            "flagged": 1
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 1828,
+            "flagged": 5
+          },
+          "ORDINARY": {
+            "transactions": 56521,
+            "flagged": 65
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 480,
+            "flagged": 0
+          }
+        }
+      },
+      "pr_auc_test": 0.904,
+      "test": {
+        "confusion": {
+          "tp": 5621,
+          "fp": 402,
+          "fn": 1515,
+          "tn": 251167
+        },
+        "transaction": {
+          "precision": 0.9333,
+          "recall": 0.7877,
+          "f1": 0.8543
+        },
+        "incident": {
+          "precision": 0.9333,
+          "recall": 0.9666,
+          "f1": 0.9496,
+          "incidents": 2903,
+          "caught": 2806
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 365,
+            "caught": 365,
+            "recall": 1.0
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 360,
+            "caught": 336,
+            "recall": 0.9333
+          },
+          "NEW_COUNTRY": {
+            "incidents": 411,
+            "caught": 390,
+            "recall": 0.9489
+          },
+          "PRICE_HIKE": {
+            "incidents": 563,
+            "caught": 551,
+            "recall": 0.9787
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 757,
+            "caught": 717,
+            "recall": 0.9472
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 447,
+            "caught": 447,
+            "recall": 1.0
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 1561,
+            "flagged": 2
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 737,
+            "flagged": 0
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 1208,
+            "flagged": 32
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 371,
+            "flagged": 3
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 759,
+            "flagged": 0
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 8321,
+            "flagged": 31
+          },
+          "ORDINARY": {
+            "transactions": 236792,
+            "flagged": 334
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 1820,
+            "flagged": 0
+          }
+        }
+      }
+    },
+    "random_forest_ablation": {
+      "name": "Random forest, fewer simulator tells",
+      "threshold": 0.6058,
+      "pr_auc_validation": 0.8921,
+      "validation": {
+        "confusion": {
+          "tp": 1425,
+          "fp": 111,
+          "fn": 394,
+          "tn": 59962
+        },
+        "transaction": {
+          "precision": 0.9277,
+          "recall": 0.7834,
+          "f1": 0.8495
+        },
+        "incident": {
+          "precision": 0.9277,
+          "recall": 0.9547,
+          "f1": 0.941,
+          "incidents": 707,
+          "caught": 675
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 90,
+            "caught": 90,
+            "recall": 1.0
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 94,
+            "caught": 75,
+            "recall": 0.7979
+          },
+          "NEW_COUNTRY": {
+            "incidents": 116,
+            "caught": 110,
+            "recall": 0.9483
+          },
+          "PRICE_HIKE": {
+            "incidents": 106,
+            "caught": 102,
+            "recall": 0.9623
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 203,
+            "caught": 200,
+            "recall": 0.9852
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 98,
+            "caught": 98,
+            "recall": 1.0
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 428,
+            "flagged": 0
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 164,
+            "flagged": 0
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 346,
+            "flagged": 11
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 107,
+            "flagged": 3
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 199,
+            "flagged": 1
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 1828,
+            "flagged": 4
+          },
+          "ORDINARY": {
+            "transactions": 56521,
+            "flagged": 92
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 480,
+            "flagged": 0
+          }
+        }
+      },
+      "pr_auc_test": 0.8919,
+      "test": {
+        "confusion": {
+          "tp": 5601,
+          "fp": 462,
+          "fn": 1535,
+          "tn": 251107
+        },
+        "transaction": {
+          "precision": 0.9238,
+          "recall": 0.7849,
+          "f1": 0.8487
+        },
+        "incident": {
+          "precision": 0.9238,
+          "recall": 0.9583,
+          "f1": 0.9407,
+          "incidents": 2903,
+          "caught": 2782
+        },
+        "recall_by_issue_type": {
+          "CARD_TESTING": {
+            "incidents": 365,
+            "caught": 365,
+            "recall": 1.0
+          },
+          "DUPLICATE_CHARGE": {
+            "incidents": 360,
+            "caught": 321,
+            "recall": 0.8917
+          },
+          "NEW_COUNTRY": {
+            "incidents": 411,
+            "caught": 389,
+            "recall": 0.9465
+          },
+          "PRICE_HIKE": {
+            "incidents": 563,
+            "caught": 541,
+            "recall": 0.9609
+          },
+          "SPENDING_SPIKE": {
+            "incidents": 757,
+            "caught": 719,
+            "recall": 0.9498
+          },
+          "TRIAL_CONVERSION": {
+            "incidents": 447,
+            "caught": 447,
+            "recall": 1.0
+          }
+        },
+        "false_positives_by_kind": {
+          "APP_STORE_PURCHASES": {
+            "transactions": 1561,
+            "flagged": 2
+          },
+          "CANCELLED_TRIAL": {
+            "transactions": 737,
+            "flagged": 0
+          },
+          "DOUBLE_COFFEE": {
+            "transactions": 1208,
+            "flagged": 27
+          },
+          "FOREIGN_ONLINE_ORDER": {
+            "transactions": 371,
+            "flagged": 4
+          },
+          "LEGIT_BIG_PURCHASE": {
+            "transactions": 759,
+            "flagged": 0
+          },
+          "LEGIT_TRAVEL": {
+            "transactions": 8321,
+            "flagged": 32
+          },
+          "ORDINARY": {
+            "transactions": 236792,
+            "flagged": 397
+          },
+          "TOLL_ROAD_TRIP": {
+            "transactions": 1820,
+            "flagged": 0
+          }
+        }
+      }
+    }
+  },
+  "ablation_removed_features": [
+    "merchant_prior_tx",
+    "days_since_merchant",
+    "hour"
+  ],
+  "disagreements": {
+    "model": "random_forest",
+    "rules_right_model_wrong": {
+      "incidents_only_rules_caught": {
+        "count": 49,
+        "by_kind": {
+          "DUPLICATE_CHARGE": 24,
+          "NEW_COUNTRY": 16,
+          "SPENDING_SPIKE": 9
+        },
+        "examples": [
+          {
+            "occurredAt": "2026-01-31T20:29:02+00:00",
+            "merchant": "Online Electronics Store",
+            "category": "SHOPPING",
+            "amountCents": 86645,
+            "country": "ES",
+            "truth": "NEW_COUNTRY",
+            "ruleAlerts": "new-country",
+            "modelScore": 0.299
+          },
+          {
+            "occurredAt": "2026-02-01T21:56:11+00:00",
+            "merchant": "Sweetgreen",
+            "category": "DINING",
+            "amountCents": 9773,
+            "country": "US",
+            "truth": "SPENDING_SPIKE",
+            "ruleAlerts": "",
+            "modelScore": 0.216
+          },
+          {
+            "occurredAt": "2026-02-01T22:37:23+00:00",
+            "merchant": "Online Electronics Store",
+            "category": "SHOPPING",
+            "amountCents": 25059,
+            "country": "DE",
+            "truth": "NEW_COUNTRY",
+            "ruleAlerts": "new-country",
+            "modelScore": 0.154
+          },
+          {
+            "occurredAt": "2026-02-02T03:11:54+00:00",
+            "merchant": "Digital Gift Cards",
+            "category": "SHOPPING",
+            "amountCents": 53753,
+            "country": "KR",
+            "truth": "NEW_COUNTRY",
+            "ruleAlerts": "new-country",
+            "modelScore": 0.303
+          },
+          {
+            "occurredAt": "2026-02-02T22:48:26+00:00",
+            "merchant": "Chipotle",
+            "category": "DINING",
+            "amountCents": 8499,
+            "country": "US",
+            "truth": "SPENDING_SPIKE",
+            "ruleAlerts": "",
+            "modelScore": 0.14
+          }
+        ]
+      },
+      "legit_only_model_flagged": {
+        "count": 282,
+        "by_kind": {
+          "ORDINARY": 252,
+          "LEGIT_TRAVEL": 28,
+          "APP_STORE_PURCHASES": 2
+        },
+        "examples": [
+          {
+            "occurredAt": "2026-07-02T21:37:38+00:00",
+            "merchant": "Best Buy",
+            "category": "SHOPPING",
+            "amountCents": 11606,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "",
+            "modelScore": 0.974
+          },
+          {
+            "occurredAt": "2026-07-15T17:46:40+00:00",
+            "merchant": "Amazon",
+            "category": "SHOPPING",
+            "amountCents": 25236,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "",
+            "modelScore": 0.972
+          },
+          {
+            "occurredAt": "2026-05-08T20:28:48+00:00",
+            "merchant": "Shake Shack",
+            "category": "DINING",
+            "amountCents": 5152,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "",
+            "modelScore": 0.97
+          },
+          {
+            "occurredAt": "2026-09-06T20:54:28+00:00",
+            "merchant": "Panera Bread",
+            "category": "DINING",
+            "amountCents": 6680,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "",
+            "modelScore": 0.956
+          },
+          {
+            "occurredAt": "2026-07-07T21:25:11+00:00",
+            "merchant": "Etsy",
+            "category": "SHOPPING",
+            "amountCents": 7798,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "",
+            "modelScore": 0.95
+          }
+        ]
+      }
+    },
+    "model_right_rules_wrong": {
+      "incidents_only_model_caught": {
+        "count": 391,
+        "by_kind": {
+          "SPENDING_SPIKE": 281,
+          "PRICE_HIKE": 67,
+          "NEW_COUNTRY": 42,
+          "CARD_TESTING": 1
+        },
+        "examples": [
+          {
+            "occurredAt": "2026-02-01T05:01:26+00:00",
+            "merchant": "Headspace",
+            "category": "SUBSCRIPTIONS",
+            "amountCents": 1599,
+            "country": "US",
+            "truth": "PRICE_HIKE",
+            "ruleAlerts": "",
+            "modelScore": 0.692
+          },
+          {
+            "occurredAt": "2026-02-01T06:31:06+00:00",
+            "merchant": "Headspace",
+            "category": "SUBSCRIPTIONS",
+            "amountCents": 1499,
+            "country": "US",
+            "truth": "PRICE_HIKE",
+            "ruleAlerts": "",
+            "modelScore": 0.916
+          },
+          {
+            "occurredAt": "2026-02-02T04:33:57+00:00",
+            "merchant": "Planet Fitness",
+            "category": "SUBSCRIPTIONS",
+            "amountCents": 3099,
+            "country": "US",
+            "truth": "PRICE_HIKE",
+            "ruleAlerts": "",
+            "modelScore": 0.634
+          },
+          {
+            "occurredAt": "2026-02-02T04:42:54+00:00",
+            "merchant": "Disney+",
+            "category": "SUBSCRIPTIONS",
+            "amountCents": 1699,
+            "country": "US",
+            "truth": "PRICE_HIKE",
+            "ruleAlerts": "",
+            "modelScore": 0.634
+          },
+          {
+            "occurredAt": "2026-02-03T15:30:52+00:00",
+            "merchant": "Walmart",
+            "category": "SHOPPING",
+            "amountCents": 15383,
+            "country": "US",
+            "truth": "SPENDING_SPIKE",
+            "ruleAlerts": "",
+            "modelScore": 0.513
+          }
+        ]
+      },
+      "legit_only_rules_flagged": {
+        "count": 3330,
+        "by_kind": {
+          "ORDINARY": 831,
+          "APP_STORE_PURCHASES": 650,
+          "DOUBLE_COFFEE": 572,
+          "LEGIT_BIG_PURCHASE": 470,
+          "TOLL_ROAD_TRIP": 370,
+          "FOREIGN_ONLINE_ORDER": 293,
+          "LEGIT_TRAVEL": 144
+        },
+        "examples": [
+          {
+            "occurredAt": "2026-03-15T11:51:54+00:00",
+            "merchant": "Yoox Italia",
+            "category": "SHOPPING",
+            "amountCents": 12058,
+            "country": "IT",
+            "truth": "FOREIGN_ONLINE_ORDER",
+            "ruleAlerts": "new-country",
+            "modelScore": 0.591
+          },
+          {
+            "occurredAt": "2026-07-20T20:34:31+00:00",
+            "merchant": "Chipotle",
+            "category": "DINING",
+            "amountCents": 6498,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "spending-spike",
+            "modelScore": 0.589
+          },
+          {
+            "occurredAt": "2026-03-23T12:02:58+00:00",
+            "merchant": "Thai Basil",
+            "category": "DINING",
+            "amountCents": 10554,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "spending-spike",
+            "modelScore": 0.588
+          },
+          {
+            "occurredAt": "2026-03-30T13:28:19+00:00",
+            "merchant": "Shake Shack",
+            "category": "DINING",
+            "amountCents": 11182,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "spending-spike",
+            "modelScore": 0.588
+          },
+          {
+            "occurredAt": "2026-10-08T20:05:05+00:00",
+            "merchant": "Thai Basil",
+            "category": "DINING",
+            "amountCents": 5869,
+            "country": "US",
+            "truth": "ORDINARY",
+            "ruleAlerts": "spending-spike",
+            "modelScore": 0.587
+          }
+        ]
+      }
+    },
+    "both_missed": {
+      "count": 48,
+      "by_kind": {
+        "SPENDING_SPIKE": 31,
+        "PRICE_HIKE": 12,
+        "NEW_COUNTRY": 5
+      },
+      "examples": [
+        {
+          "occurredAt": "2026-02-01T20:24:20+00:00",
+          "merchant": "Walmart",
+          "category": "SHOPPING",
+          "amountCents": 17550,
+          "country": "US",
+          "truth": "SPENDING_SPIKE",
+          "ruleAlerts": "",
+          "modelScore": 0.266
+        },
+        {
+          "occurredAt": "2026-02-02T03:48:32+00:00",
+          "merchant": "Planet Fitness",
+          "category": "SUBSCRIPTIONS",
+          "amountCents": 2799,
+          "country": "US",
+          "truth": "PRICE_HIKE",
+          "ruleAlerts": "",
+          "modelScore": 0.381
+        },
+        {
+          "occurredAt": "2026-02-02T04:21:00+00:00",
+          "merchant": "Disney+",
+          "category": "SUBSCRIPTIONS",
+          "amountCents": 1699,
+          "country": "US",
+          "truth": "PRICE_HIKE",
+          "ruleAlerts": "",
+          "modelScore": 0.457
+        },
+        {
+          "occurredAt": "2026-02-03T04:22:50+00:00",
+          "merchant": "The New York Times",
+          "category": "SUBSCRIPTIONS",
+          "amountCents": 1999,
+          "country": "US",
+          "truth": "PRICE_HIKE",
+          "ruleAlerts": "",
+          "modelScore": 0.405
+        },
+        {
+          "occurredAt": "2026-02-04T03:48:42+00:00",
+          "merchant": "Disney+",
+          "category": "SUBSCRIPTIONS",
+          "amountCents": 1599,
+          "country": "US",
+          "truth": "PRICE_HIKE",
+          "ruleAlerts": "",
+          "modelScore": 0.579
+        }
+      ]
+    },
+    "both_flagged_legit": {
+      "count": 120,
+      "by_kind": {
+        "ORDINARY": 82,
+        "DOUBLE_COFFEE": 32,
+        "LEGIT_TRAVEL": 3,
+        "FOREIGN_ONLINE_ORDER": 3
+      },
+      "examples": [
+        {
+          "occurredAt": "2026-11-17T20:23:26+00:00",
+          "merchant": "IKEA",
+          "category": "SHOPPING",
+          "amountCents": 26260,
+          "country": "US",
+          "truth": "ORDINARY",
+          "ruleAlerts": "spending-spike",
+          "modelScore": 0.958
+        },
+        {
+          "occurredAt": "2026-06-15T21:55:51+00:00",
+          "merchant": "Best Buy",
+          "category": "SHOPPING",
+          "amountCents": 11183,
+          "country": "US",
+          "truth": "ORDINARY",
+          "ruleAlerts": "spending-spike",
+          "modelScore": 0.928
+        },
+        {
+          "occurredAt": "2026-04-23T20:11:47+00:00",
+          "merchant": "Amazon",
+          "category": "SHOPPING",
+          "amountCents": 18782,
+          "country": "US",
+          "truth": "ORDINARY",
+          "ruleAlerts": "spending-spike",
+          "modelScore": 0.893
+        },
+        {
+          "occurredAt": "2026-10-07T20:47:59+00:00",
+          "merchant": "Best Buy",
+          "category": "SHOPPING",
+          "amountCents": 13408,
+          "country": "US",
+          "truth": "ORDINARY",
+          "ruleAlerts": "spending-spike",
+          "modelScore": 0.892
+        },
+        {
+          "occurredAt": "2026-07-15T18:40:26+00:00",
+          "merchant": "IKEA",
+          "category": "SHOPPING",
+          "amountCents": 26395,
+          "country": "US",
+          "truth": "ORDINARY",
+          "ruleAlerts": "spending-spike",
+          "modelScore": 0.889
+        }
+      ]
+    }
+  },
+  "random_forest_top_features": [
+    {
+      "feature": "cat_day_vs_usual",
+      "importance": 0.1046
+    },
+    {
+      "feature": "cat_day_total",
+      "importance": 0.0894
+    },
+    {
+      "feature": "category_SHOPPING",
+      "importance": 0.075
+    },
+    {
+      "feature": "merchant_prior_tx",
+      "importance": 0.0718
+    },
+    {
+      "feature": "cat_day_z",
+      "importance": 0.0672
+    },
+    {
+      "feature": "secs_since_identical",
+      "importance": 0.0503
+    },
+    {
+      "feature": "days_since_merchant",
+      "importance": 0.0463
+    },
+    {
+      "feature": "missingindicator_prev_two_amounts_equal",
+      "importance": 0.0426
+    },
+    {
+      "feature": "amount_vs_last_at_merchant",
+      "importance": 0.0406
+    },
+    {
+      "feature": "amount",
+      "importance": 0.0379
+    }
+  ],
+  "logistic_regression_top_weights": [
+    {
+      "feature": "category_UTILITIES",
+      "weight": -5.5839
+    },
+    {
+      "feature": "category_SHOPPING",
+      "weight": 4.4321
+    },
+    {
+      "feature": "category_TRAVEL",
+      "weight": -2.9054
+    },
+    {
+      "feature": "category_TRANSPORTATION",
+      "weight": -2.231
+    },
+    {
+      "feature": "category_DINING",
+      "weight": 1.9051
+    },
+    {
+      "feature": "amount",
+      "weight": -1.5163
+    },
+    {
+      "feature": "cat_day_vs_usual",
+      "weight": 1.4193
+    },
+    {
+      "feature": "secs_since_identical",
+      "weight": -1.329
+    },
+    {
+      "feature": "hour",
+      "weight": -1.3156
+    },
+    {
+      "feature": "missingindicator_secs_since_identical",
+      "weight": 1.1843
+    }
+  ]
+}

@@ -40,7 +40,7 @@ class DashboardIT {
     private static final String BASE_URL = System.getProperty("e2e.baseUrl", "http://localhost:8083");
     private static final Dimension DESKTOP = new Dimension(1280, 900);
     private static final Dimension PHONE = new Dimension(390, 844);
-    private static final List<String> VIEWS = List.of("overview", "feed", "alerts", "analytics", "recurring", "scenarios");
+    private static final List<String> VIEWS = List.of("overview", "feed", "alerts", "analytics", "recurring", "scenarios", "ml");
 
     private static WebDriver browser;
     private static WebDriverWait wait;
@@ -168,6 +168,18 @@ class DashboardIT {
             List<WebElement> body = d.findElements(By.cssSelector("[data-testid=recurring-table] tbody"));
             return !body.isEmpty() && !body.getFirst().getText().equals(firstUsersCharges);
         });
+    }
+
+    @Test
+    void theMlComparisonShowsTheSavedExperimentForEveryApproach() {
+        open("ml");
+
+        assertThat(text("ml-headline")).startsWith("On the held-out run, the");
+        List<WebElement> rows = wait.until(d -> d.findElements(By.cssSelector("[data-testid=ml-scores-table] tbody tr")));
+        assertThat(rows).extracting(row -> row.findElement(By.tagName("th")).getText())
+                .startsWith("Six rules (Java)", "Logistic regression", "Random forest");
+        // Every approach has a precision and a recall as a percent, read from the saved results file.
+        assertThat(rows).allSatisfy(row -> assertThat(row.findElements(By.tagName("td")).get(0).getText()).endsWith("%"));
     }
 
     @Test

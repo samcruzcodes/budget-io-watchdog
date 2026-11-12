@@ -19,7 +19,7 @@ It's the next version of Budget.io, my manual budget planner. This doc covers ho
 | 3.5 | Run the stack on a local Kubernetes cluster (kind) | The cluster and its demos (3.5a) are done; rule memory across pods (3.5b) is a documented limit, not built |
 | 4 | Dashboard, with a Selenium end-to-end test | Done: six views, simulator controls (pause, resume, speed, pausing itself), scenarios on demand, and browser tests. Focus mode wasn't built |
 | 5 | CI with GitHub Actions, and benchmark results in the README | CI is written (not yet run on GitHub); the benchmark is planned |
-| 6 | Data science: compare the rules with an ML model | Planned |
+| 6 | Data science: compare the rules with an ML model | Done as an offline experiment: a random forest scores higher than the rules on simulated data, with the caveats in that section |
 
 I'd like to finish the dashboard and CI before Phase 6, but Phase 6 only needs the simulator, the labels, and the rules' alerts, so I could also pick it up right after Phase 3.
 
@@ -977,6 +977,112 @@ Migration V5 adds an index on `ground_truth_labels (scenario_id)` for the lookup
 
 The scripts live in the simulator and the rules in the watchdog, so only that last test proves a script really meets its rule's conditions. If a threshold is changed in `application.yml`, a scenario may stop firing, and the tab will say "Not detected".
 
+## Phase 6: rules compared with machine learning
+
+Built 2026-11-12, in `analysis/`. An offline experiment in Python (pandas, scikit-learn); the Java pipeline and its rules are unchanged, and no model runs in it. The dashboard's "Rules vs ML" tab shows the saved results (`analysis/results/metrics.json`, copied to `dashboard/src/ml-results.json` by the experiment script; a test checks the two match).
+
+## How the data was made
+
+`analysis/generate_dataset.sh` runs the real pipeline, once per seed, in its own Compose project: the simulator publishes one simulated year for 300 people (all five personas) to Kafka at full speed, the watchdog stores every transaction and label and runs the six rules, and the script exports one CSV per seed from Postgres. So the rules' side of the comparison is the alerts the Java rule engine really raised, not a re-implementation. Demo scenarios (`source = DEMO`) and income are left out.
+
+The preset (`config/simulator.ml.env`) plants problems less often than the demo but still far more often than real life, so there's enough of each kind to learn from.
+
+| Split | Source | Transactions | Cards | Issue transactions | Share | Incidents |
+|---|---|---|---|---|---|---|
+| Train | seed 101, 75% of cards | 196,723 | 225 | 5,365 | 2.7% | 2,160 |
+| Validation | seed 101, the other 25% | 61,892 | 75 | 1,819 | 2.9% | 707 |
+| Test | seed 202, a separate run | 258,705 | 300 | 7,136 | 2.8% | 2,903 |
+
+- **Train and validation** share a simulator run but never a card. **Test** is a different run with a different seed: different people, habits, and incidents. It was scored once, after the models and thresholds were fixed.
+- About 3% of transactions belong to an incident, so accuracy is useless here (never flagging anything would be 97% accurate) and isn't reported.
+
+## What the label means
+
+A transaction is "suspicious" if the simulator's answer key gives it an issue type. That's one transaction for a duplicate, a price hike, a trial conversion, or a foreign charge, but about five for a card-testing run (every probe and the final purchase) and for a binge day (every purchase in the category that day). The rules alert once per incident by design, so two scores are reported:
+
+- **Precision:** of the transactions flagged, the share that are labeled.
+- **Incident recall:** of the planted incidents, the share with at least one flagged labeled transaction. This is how the watchdog has always scored its rules.
+- **Transaction recall** is reported too, with the warning that it understates the rules (35% against 85% by incident).
+
+## Features, and how leakage was kept out
+
+`features.py` walks each card's transactions in time order and writes a row's features from the state built by *earlier* transactions only; the state is updated after. 20 numbers and the category: the amount, how it compares with the card's average, whether the country is new for the card, days since a travel purchase, small charges and all charges in the last hour and day, seconds since an identical charge, how often and how recently the card used this merchant, the last amount there and the gap before it, and today's category total against the card's usual day.
+
+Never used: the issue type, the look-alike type, the scenario ID, the persona, the rules' alerts, user and card IDs, and the merchant's name and country code themselves (the simulator's fraud uses its own fictional merchants, so a model could memorize names).
+
+Tests check that changing later transactions doesn't change an earlier row's features, that one card's history never reaches another card, and that no card is in both train and validation.
+
+## Models
+
+Logistic regression (median imputation with a "missing" flag, a log squeeze, scaling, balanced class weights) and a random forest (300 trees, at least 3 rows per leaf, balanced class weights). No hyperparameter search. Each model's threshold is the one with the best incident-level F1 on the validation cards.
+
+## Results on the held-out run
+
+| Approach | Precision | Incident recall | F1 | Transaction recall | PR-AUC | Legitimate transactions flagged |
+|---|---|---|---|---|---|---|
+| Six rules (Java) | 42% | 85% | 56% | 35% | n/a | 3,450 |
+| Logistic regression | 63% | 84% | 72% | 69% | 0.6334 | 2,873 |
+| Random forest | 93% | 97% | 95% | 79% | 0.904 | 402 |
+| Random forest, fewer simulator tells | 92% | 96% | 94% | 78% | 0.8919 | 462 |
+
+Incidents caught, by kind:
+
+| Planted problem | Rules | Logistic regression | Random forest |
+|---|---|---|---|
+| CARD_TESTING | 100% | 100% | 100% |
+| DUPLICATE_CHARGE | 100% | 85% | 93% |
+| NEW_COUNTRY | 89% | 91% | 95% |
+| PRICE_HIKE | 86% | 64% | 98% |
+| SPENDING_SPIKE | 59% | 84% | 95% |
+| TRIAL_CONVERSION | 100% | 86% | 100% |
+
+Legitimate transactions flagged, by kind (the look-alikes the simulator plants so nothing scores perfectly):
+
+| Legitimate behavior | Transactions | Rules flagged | Logistic regression | Random forest |
+|---|---|---|---|---|
+| APP_STORE_PURCHASES | 1,561 | 650 | 194 | 2 |
+| CANCELLED_TRIAL | 737 | 0 | 40 | 0 |
+| DOUBLE_COFFEE | 1,208 | 604 | 604 | 32 |
+| FOREIGN_ONLINE_ORDER | 371 | 296 | 35 | 3 |
+| LEGIT_BIG_PURCHASE | 759 | 470 | 572 | 0 |
+| LEGIT_TRAVEL | 8,321 | 147 | 75 | 31 |
+| ORDINARY | 236,792 | 913 | 1,339 | 334 |
+| TOLL_ROAD_TRIP | 1,820 | 370 | 14 | 0 |
+
+Where the rules and the forest disagree (2,903 incidents, 251,569 legitimate transactions):
+
+- **Only the forest caught:** 391 incidents, mostly spending spikes (281) and price hikes (67). The spike rule needs three standard deviations over a fixed baseline, and the hike rule only fires after two steady months, so a second hike in a row gets past it.
+- **Only the rules caught:** 49 incidents (24 duplicates, 16 foreign charges, 9 spikes). A rule's condition is exact; the forest's score for these fell under its threshold.
+- **Both missed:** 48 incidents, mostly mild binge days.
+- **Only the rules flagged, wrongly:** 3,330 legitimate transactions, most of them planted look-alikes (app purchases, second coffees, big planned purchases, tolls, foreign online orders).
+- **Only the forest flagged, wrongly:** 282, nearly all ordinary shopping that happened to be large for the card.
+- **Both flagged, wrongly:** 120.
+
+## What this means
+
+On this data the random forest is clearly better than the rules, and logistic regression is better on F1 but worse on duplicates, price hikes, and trial conversions, where the signal is an exact condition a straight line can't express. The rules' recall is already 85%; what they lack is precision, because a fixed condition can't tell a duplicate from a second coffee.
+
+What that does *not* show:
+
+- **It's the simulator, not the world.** The models were trained on output of the same generator they were tested on. A duplicate always posts 5 to 90 seconds later and a second coffee 1 to 5 minutes later; big purchases come in a few fixed prices. A forest learns those lines exactly. Removing the three features most likely to give the simulator away (`merchant_prior_tx`, `days_since_merchant`, `hour`) only moved F1 from 95% to 94%, so it isn't leaning on those, but the look-alikes themselves are tidier than real life.
+- **Labels are perfect and instant here.** Real labels come from disputes, weeks later, and only for some transactions.
+- **Nobody is adapting.** Real fraud changes to avoid whatever detects it.
+- **The rules weren't tuned.** Their thresholds are starting values; each model's threshold was fitted to labeled data.
+- **The features were written knowing the six problems.** A kind of problem nobody planted has no labels to learn from, while a rule for it can be written the same day. And a rule explains itself in a sentence; a forest gives a score.
+
+Would adding a model to the live pipeline be worth it? The evidence supports trying it as a *second opinion*, not a replacement: keep the rules for their explanations and for new problems, and use a model's score to suppress the look-alike false positives and to catch spikes the fixed threshold misses. It would also need what this experiment didn't: the same features computed in the stream, a way to collect real labels, and retraining. These numbers are from simulated data and are not a claim about real-world fraud detection.
+
+### Decisions
+
+| Question | What's built | Alternatives | Why |
+|---|---|---|---|
+| Where the data comes from | the real pipeline, exported from Postgres | a separate generator; a Java exporter | the rules' alerts are then the production rule engine's, on the very same transactions |
+| Test set | a second simulator run with another seed | a random row split; a time split of one run | rows from one card or one incident on both sides would leak; a separate run shares nothing |
+| Unit of recall | incidents, with transaction-level beside it | transactions only | rules alert once per incident, so transaction recall alone would misrepresent them |
+| Merchant name and country code | left out of the features | one-hot or target encoding | the simulator's fraud has its own merchant names, which a model could memorize |
+| Models | logistic regression and a random forest, no search | gradient boosting; a grid search; an isolation forest | two well-understood baselines answer the question; the forest's margin doesn't hinge on tuning |
+| Showing it | a static tab that imports the saved JSON at build time | an API endpoint; live scoring | these are offline results, and a file can't be mistaken for live predictions |
+
 ## Planned work
 
 ### Phase 3.5b: rule memory across pods
@@ -1004,26 +1110,6 @@ My plan: measure the gap first, by running the same seed with 1 pod and with 3 a
 The GitHub Actions workflow is written (above). Still planned: a benchmark with about 1,000 simulated users at max speed, to measure maximum throughput, latency at a steady load below that maximum, and precision and recall over a full simulated year. Those numbers go in the README, and the same run produces the Phase 6 dataset.
 
 Threshold tuning happens here too, on the benchmark preset rather than the demo, because the demo plants problems far more often than real life and that inflates precision. I'll tune on one seed and report the results on a different seed, so the numbers aren't graded on the same data the thresholds were tuned on.
-
-### Phase 6: rules vs. ML
-
-The goal isn't to replace the rules. I want to see whether a model trained on labeled history catches patterns the rules miss, where it does worse, and whether the two work better together. I'll refine this plan before starting Phase 6.
-
-The rough plan:
-
-- Export transactions, alerts, and labels to Parquet and explore them in a notebook with pandas, DuckDB, and scikit-learn.
-- Build features for each card in time order, using only what was known before each transaction.
-- Split by time (train on earlier months, test on later ones), and possibly test on a differently seeded group of people too.
-- Compare a supervised model (gradient boosting) and an unsupervised one (Isolation Forest) against the rules on the same test period: precision and recall per issue type, precision-recall curves and threshold choices, and a look at which mistakes each approach makes.
-- Never use the persona as a feature, because real transactions don't come with one.
-
-What the results can and can't show:
-
-- The simulator has giveaways a model could memorize. Fraud uses its own fictional merchants, card-testing probes come from a fixed list, and big purchases have fixed prices. Phase 6 has to deal with these, either by leaving those columns out of the model's inputs or by making the simulator less predictable. Otherwise a high score just means the model learned the simulator.
-- The simulator's labels are perfect and instant. Real labels show up late and noisy.
-- The rates of each issue are ones I chose, not measured from real data, and there's no fraudster adapting to the detector.
-
-So the comparison shows the method, not real-world performance.
 
 ### Further out
 

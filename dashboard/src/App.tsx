@@ -6,6 +6,7 @@ import { useHashView } from './useHashView';
 import { Alerts } from './views/Alerts';
 import { Analytics } from './views/Analytics';
 import { LiveFeed } from './views/LiveFeed';
+import { MlComparison } from './views/MlComparison';
 import { Overview } from './views/Overview';
 import { Recurring } from './views/Recurring';
 import { Scenarios } from './views/Scenarios';
@@ -17,6 +18,7 @@ const VIEWS = [
   { id: 'analytics', label: 'Analytics', render: () => <Analytics /> },
   { id: 'recurring', label: 'Recurring', render: () => <Recurring /> },
   { id: 'scenarios', label: 'Scenarios', render: () => <Scenarios /> },
+  { id: 'ml', label: 'Rules vs ML', render: () => <MlComparison /> },
 ] as const;
 
 type ViewId = (typeof VIEWS)[number]['id'];

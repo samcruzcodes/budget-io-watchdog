@@ -1,0 +1,20 @@
+# Used only by generate_dataset.sh, on top of the main docker-compose.yml and under its own project name
+# ("watchdog-ml"), so a dataset run never touches the demo stack. No ports are published: the script reads the
+# results with psql inside the Postgres container.
+services:
+  kafka:
+    ports: !reset []
+  postgres:
+    ports: !reset []
+  watchdog:
+    ports: !reset []
+    environment:
+      # One log line per rule hit and per skipped message would be hundreds of thousands of lines here.
+      LOGGING_LEVEL_IO_BUDGET_WATCHDOG_INGEST: warn
+  simulator:
+    env_file: !override
+      - config/simulator.ml.env
+    environment:
+      SIM_SEED: ${ML_SEED:?set ML_SEED}
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      SIM_RESUME: "false"

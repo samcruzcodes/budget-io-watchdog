@@ -51,7 +51,7 @@ flowchart LR
 - **Kafka:** holds every transaction, in order per card, until the watchdog reads it. If the watchdog goes down, messages wait, and it picks up where it left off.
 - **Watchdog** (Spring Boot): validates each message, stores it once even if Kafka delivers it twice, and sends anything it can't parse to a dead-letter topic. Each new transaction goes through six rules. A hit becomes an alert with a plain-English explanation, saved in the same database transaction as the charge and then published to an `alerts` topic. After a restart it replays the last 90 simulated days from Postgres, so the rules remember each card before it reads anything new.
 - **PostgreSQL:** transactions, alerts, and the answer key. Only the scoring code reads the answer key; a test fails the build if detection code mentions it.
-- **Dashboard** (React, TypeScript, Vite): Overview, Live feed, Alerts, Analytics, Recurring, and Scenarios, plus controls to pause, resume, and speed up the simulator.
+- **Dashboard** (React, TypeScript, Vite): Overview, Live feed, Alerts, Analytics, Recurring, Scenarios, and Rules vs ML (saved offline results), plus controls to pause, resume, and speed up the simulator.
 
 | Part | Built with |
 |---|---|
@@ -150,8 +150,9 @@ cd dashboard && nvm use && npm ci && npm test && npm run build     # dashboard: 
 |---|---|---|
 | Backend unit (`*Test`) | 270 | nothing: plain Java |
 | Backend integration (`*IT`) | 43 | real Kafka and Postgres in Docker (Testcontainers) |
-| Dashboard unit (Vitest) | 46 | plain TypeScript logic |
-| Browser and end-to-end (Selenium, headless Chrome) | 18 | the running Compose stack, through nginx |
+| Dashboard unit (Vitest) | 50 | plain TypeScript logic |
+| Browser and end-to-end (Selenium, headless Chrome) | 19 |
+| Analysis (pytest) | 16 | plain Python: features, scoring, the split | the running Compose stack, through nginx |
 
 All passing on 2026-11-11. What the tests cover, by the question they answer:
 
@@ -192,6 +193,27 @@ Measured 2026-11-11. The numbers show the pipeline keeping up with what the simu
 
 **Detection quality** is on the dashboard's Overview and Analytics views, per rule, against the answer key. The demo plants problems far more often than real life, so those are demo rates and I'm not quoting them here as results. [docs/DESIGN.md](docs/DESIGN.md) has the numbers, each rule's known false positives, and why.
 
+## Rules compared with machine learning
+
+An offline experiment in [analysis/](analysis/): given the same history the rules see, can a supervised model tell the planted problems from legitimate transactions better than the six rules? The data comes from the real pipeline (300 simulated people for a year, per seed), the rules' side is the alerts the Java rule engine actually raised, and the models are scored once on a separate simulator run they never saw.
+
+| Approach | Precision | Incident recall | F1 | Transaction recall | PR-AUC | Legitimate transactions flagged |
+|---|---|---|---|---|---|---|
+| Six rules (Java) | 42% | 85% | 56% | 35% | n/a | 3,450 |
+| Logistic regression | 63% | 84% | 72% | 69% | 0.6334 | 2,873 |
+| Random forest | 93% | 97% | 95% | 79% | 0.904 | 402 |
+| Random forest, fewer simulator tells | 92% | 96% | 94% | 78% | 0.8919 | 462 |
+
+Precision is the share of flagged transactions that belong to a planted incident; incident recall is the share of incidents with at least one flag; about 3% of the 258,705 held-out transactions belong to an incident.
+
+On this simulated data the random forest is clearly better, mostly because it tells the planted look-alikes apart (a second coffee, an app purchase, a planned big purchase), which fixed rules can't. That is not a claim about real fraud: the models learned from the same generator they were tested on, the labels are perfect, the rules' thresholds were never tuned, and nobody is trying to evade anything. The rules still explain themselves in a sentence and can be written for a problem with no labeled examples. The full method, the per-problem results, the disagreements, and the limits are in [analysis/README.md](analysis/README.md); the dashboard's **Rules vs ML** tab shows the same saved results. No model runs in the live pipeline.
+
+```
+analysis/generate_dataset.sh                                   # two simulated years through the real pipeline
+cd analysis && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python experiment.py && .venv/bin/python -m pytest tests
+```
+
 ## Limitations
 
 - **One watchdog process.** The rules keep each card's history in memory. A restart, a redelivered message, and a rebalance between threads are all handled and tested. Scaling out to several pods isn't: when a card's partition moves to another pod, that pod knows less about the card (11 transactions in a measured rolling update), so alerts around the handover can differ. No transaction or alert is lost.
@@ -206,7 +228,7 @@ Measured 2026-11-11. The numbers show the pipeline keeping up with what the simu
 ## What's next
 
 - A benchmark with about 1,000 simulated users: maximum throughput, latency under steady load, and precision and recall over a simulated year with realistic rates.
-- Comparing the rules with a model trained on the labeled data (gradient boosting, isolation forest).
+- Using a model's score alongside the rules in the stream, to cut look-alike false positives, and testing it on data that isn't simulated.
 - Rule memory that follows a partition between pods, or Kafka Streams state stores.
 - Dashboard: filter every view to one user.
 - Real transactions through a Plaid adapter, and Budget.io reading real spending from Watchdog.
@@ -259,6 +281,7 @@ simulator/            the plain Java transaction generator and its control API
 watchdog-service/     the Spring Boot service: Kafka in, PostgreSQL out, detection rules, alerts, the REST API
 dashboard/            the React dashboard, served by nginx in Compose
 e2e-tests/            browser tests (Selenium), built only with -Pe2e
+analysis/             the offline rules-vs-ML experiment (Python)
 config/               simulator presets
 k8s/                  Kubernetes manifests for the kind cluster
 scripts/              kind setup, up, down, and the no-loss check
